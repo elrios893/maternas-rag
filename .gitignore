@@ -1,0 +1,32 @@
+# Entorno virtual
+venv/
+
+# Variables de entorno (contienen API keys)
+.env
+
+# FAISS index compilado (se regenera con el pipeline)
+faiss_store/*.faiss
+faiss_store/*.pkl
+faiss_store/metadata.pkl
+faiss_store/build_info.json
+
+# Datasets crudos (demasiado pesados)
+datasets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Logs y reportes generados
+logs/
+evaluation_reports/
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Editor
+.vscode/
+.idea/

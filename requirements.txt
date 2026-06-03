@@ -1,0 +1,42 @@
+# ============================================================
+# Chatbot RAG Maternas — Requirements
+# Python 3.12.7 | Generado el 31 de mayo de 2026
+# Instalado y verificado con: pip check → No broken requirements
+# ============================================================
+
+# --- API & Web ---
+fastapi==0.115.6
+uvicorn==0.32.1
+starlette==0.41.3
+pydantic==2.10.3
+pydantic-settings==2.14.1
+python-dotenv==1.0.1
+
+# --- LangChain ---
+langchain==0.3.13
+langchain-community==0.3.13
+langchain-core==0.3.63
+langchain-text-splitters==0.3.8
+langchain-groq==0.2.3
+
+# --- LLM Clients ---
+groq==0.13.1
+
+# --- Embeddings & Vector Store ---
+sentence-transformers==3.3.1
+faiss-cpu==1.9.0
+transformers==4.57.6
+torch==2.12.0
+tokenizers==0.22.2
+
+# --- UI ---
+streamlit==1.41.1
+
+# --- Evaluación ---
+ragas==0.2.12
+
+# --- Data & Utils ---
+numpy==2.4.6
+pandas==2.3.3
+tqdm==4.67.3
+requests==2.34.2
