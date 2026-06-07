@@ -67,3 +67,7 @@ query → classify_intent() → detect_risk() → FAISS retrieve() → Groq LLM 
 - **Riesgo HIGH** → alerta inmediata + respuesta de urgencia
 - **Riesgo MEDIUM** → respuesta con recomendación de consulta médica
 - **Riesgo LOW** → respuesta educativa con citas a la fuente
+
+## Siguientes mejoras
+- **Integración con telegram** → Chatbot especializado en telegram.
+- **Fine-tunning con QLORA**
