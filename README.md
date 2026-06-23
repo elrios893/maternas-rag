@@ -15,6 +15,7 @@ Chatbot conversacional basado en arquitectura RAG orientado a madres gestantes. 
 | LLM | `llama-3.3-70b-versatile` vía Groq API |
 | API | FastAPI + uvicorn |
 | UI | Streamlit |
+| Bot | Telegram (`python-telegram-bot`) |
 
 ## Datasets indexados
 
@@ -54,9 +55,24 @@ python src/ingestion/run_ingestion.py
 # 4. Arrancar
 python -m uvicorn src.api.main:app --port 8080   # Terminal 1
 streamlit run src/ui/app.py                       # Terminal 2
+python src/bot/maternas_bot.py                    # Terminal 3 (opcional, Telegram bot)
 ```
 
-UI disponible en `http://localhost:8501` · API docs en `http://localhost:8080/docs`
+UI disponible en `http://localhost:8501` · API docs en `http://localhost:8080/docs` · Bot Telegram: `python src/bot/maternas_bot.py`
+
+## Bot Telegram
+
+El bot permite chatear con Maternas directamente desde Telegram usando polling.
+
+```bash
+python src/bot/maternas_bot.py   # Terminal 3 (requiere API ya corriendo)
+```
+
+Comandos: `/start` — bienvenida · `/help` — instrucciones · `/reset` — reinicia historial · `/stats` — estadísticas del bot.
+
+Historial conversacional en RAM por usuario. Mensajes separados: header informativo (HTML) + respuesta de Maternas (texto plano) para evitar errores de parseo.
+
+El token se configura en `.env` como `TELEGRAM_BOT_TOKEN`.
 
 ## Flujo por turno
 

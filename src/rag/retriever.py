@@ -45,6 +45,26 @@ def _get_store() -> FAISSStore:
 
 
 # ---------------------------------------------------------------------------
+# Etiquetas legibles para cada tipo de fuente
+# ---------------------------------------------------------------------------
+
+SOURCE_LABELS = {
+    "multiclinsum_summary":  "Caso clínico real en español",
+    "multiclinsum_fulltext": "Caso clínico real en español",
+    "medmcqa":               "Pregunta médica con explicación",
+    "medqa_us":              "Pregunta de examen médico (inglés)",
+    "medqa_taiwan":          "Pregunta de examen médico (chino tradicional)",
+    "medqa_mainland":        "Pregunta de examen médico (chino simplificado)",
+    "textbook":              "Textbook de medicina",
+}
+
+
+def source_label(source_dataset: str) -> str:
+    """Devuelve una etiqueta legible para humanos según el dataset de origen."""
+    return SOURCE_LABELS.get(source_dataset, f"Fuente: {source_dataset}")
+
+
+# ---------------------------------------------------------------------------
 # Función pública
 # ---------------------------------------------------------------------------
 
@@ -95,34 +115,25 @@ def format_context(docs: list[dict[str, Any]], max_chars: int = 4000) -> str:
     Convierte la lista de docs recuperados en un bloque de contexto
     listo para incluir en el prompt del LLM.
 
-    Formato por fragmento:
-        [Fuente: medmcqa | EN] texto del fragmento...
-
-    El bloque se trunca a max_chars para no exceder el context window.
+    Cada fragmento numerado. El LLM puede citar [n] inline.
     """
     if not docs:
         return "No se encontraron fragmentos relevantes en la base de conocimiento."
 
-    parts: list[str] = []
+    fragments: list[str] = []
     total_chars = 0
 
     for i, doc in enumerate(docs, 1):
-        source   = doc.get("source_dataset", "desconocido")
-        lang     = doc.get("language", "?")
-        text     = doc.get("text", "").strip()
-        score    = doc.get("score", 0.0)
-
-        header   = f"[{i}] Fuente: {source} | idioma: {lang} | relevancia: {score:.3f}"
-        fragment = f"{header}\n{text}"
+        text = doc.get("text", "").strip()
+        fragment = f"--- Fragmento [{i}] ---\n{text}"
 
         if total_chars + len(fragment) > max_chars:
-            # Truncar el último fragmento si no cabe completo
             remaining = max_chars - total_chars
             if remaining > 100:
-                parts.append(fragment[:remaining] + "...")
+                fragments.append(fragment[:remaining] + "...")
             break
 
-        parts.append(fragment)
+        fragments.append(fragment)
         total_chars += len(fragment)
 
-    return "\n\n---\n\n".join(parts)
+    return "\n\n".join(fragments)

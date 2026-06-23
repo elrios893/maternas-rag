@@ -26,6 +26,7 @@ Uso básico:
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,7 +38,7 @@ from groq import Groq
 
 from src.classifiers.intent_classifier import classify_intent, IntentResult
 from src.classifiers.risk_detector import detect_risk, RiskResult
-from src.rag.retriever import retrieve, format_context
+from src.rag.retriever import retrieve, format_context, source_label
 from src.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -62,18 +63,24 @@ class ChatResponse:
 # System prompt base
 # ---------------------------------------------------------------------------
 
-BASE_SYSTEM_PROMPT = """\
-Eres Maternas, un asistente de salud especializado en acompañar a madres gestantes y en puerperio.
-
-REGLAS FUNDAMENTALES:
-1. Responde SIEMPRE en español, con lenguaje cálido, claro y sin tecnicismos innecesarios.
-2. Basa tus respuestas EXCLUSIVAMENTE en los fragmentos de la base de conocimiento médico proporcionados.
-   Si la información no está en los fragmentos, dilo explícitamente.
-3. NUNCA inventes datos clínicos, dosis, ni procedimientos que no estén en el contexto.
-4. Cita la fuente usando el número de fragmento: por ejemplo "(ver fragmento 2)".
-5. Siempre recuerda que no reemplazas a un médico — orienta, informa y deriva cuando corresponda.
-6. Adapta el tono: empático para preguntas emocionales, preciso para preguntas clínicas.\
-"""
+BASE_SYSTEM_PROMPT = (
+    "Eres Maternas, un asistente de salud especializado en acompanar a madres "
+    "gestantes y en puerperio.\n\n"
+    "REGLAS FUNDAMENTALES:\n"
+    "1. Responde SIEMPRE en espanol, con lenguaje calido, claro y sin tecnicismos "
+    "innecesarios.\n"
+    "2. Basa tus respuestas EXCLUSIVAMENTE en los fragmentos de la base de "
+    "conocimiento medico proporcionados. Si la informacion no esta en los fragmentos, "
+    "dilo explicitamente.\n"
+    "3. NUNCA inventes datos clinicos, dosis, ni procedimientos que no esten en el "
+    "contexto.\n"
+    "4. Si usas informacion de un fragmento, agrega [n] al final de la oracion "
+    "(n es el numero del fragmento). No agregues secciones de referencias al final.\n"
+    "5. Siempre recuerda que no reemplazas a un medico: orienta, informa y deriva "
+    "cuando corresponda.\n"
+    "6. Adapta el tono: empatico para preguntas emocionales, preciso para preguntas "
+    "clinicas."
+)
 
 URGENT_SUFFIX = """
 
@@ -205,6 +212,17 @@ def chat(
         )
         answer      = response.choices[0].message.content.strip()
         tokens_used = response.usage.total_tokens if response.usage else 0
+
+        # 5. Detectar citas [n] en la respuesta y construir referencias
+        cited = set(int(m) for m in re.findall(r'\[(\d+)\]', answer))
+        if cited and docs:
+            refs: list[str] = []
+            for i, doc in enumerate(docs, 1):
+                if i in cited:
+                    source = doc.get("source_dataset", "desconocido")
+                    refs.append(f"[{i}] {source_label(source)}")
+            if refs:
+                answer += "\n\n---\n" + "\n".join(refs)
 
     except Exception as e:
         logger.error(f"[Chain] Error generando respuesta: {e}")

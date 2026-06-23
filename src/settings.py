@@ -33,7 +33,8 @@ class Settings(BaseSettings):
     # --- RAG ---
     rag_top_k: int = Field(5, env="RAG_TOP_K")
 
-    # --- App ---
+    # --- Telegram Bot ---
+    telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

@@ -444,4 +444,161 @@ Por eso el diseño usa **ambas capas en secuencia**: la heurística para los cas
 
 ---
 
+---
+
+## Q15: ¿Hay TF-IDF en el proyecto y por qué no se usó?
+
+**Respuesta:**
+
+**No hay TF-IDF en el proyecto ni en ninguna de sus dependencias.** Se buscó explícitamente en todo el código y no existe ninguna referencia a `TfidfVectorizer`, `TfidfModel` ni ninguna implementación de TF-IDF.
+
+### Por qué no se necesita
+
+El proyecto usa **embeddings densos** (`intfloat/multilingual-e5-base`, 768 dimensiones) en lugar de vectores sparse como TF-IDF. Las razones:
+
+| Aspecto | TF-IDF | multilingual-e5-base (usado) |
+|---|---|---|
+| Tipo de vector | Sparse (una entrada por palabra) | Denso (768 floats densos) |
+| Semántica | Coincidencia de palabras exactas | Captura sinónimos y significado |
+| Multilingüe | Requiere un vocabulario por idioma | Soporta ES/EN/ZH en un solo modelo |
+| Tamaño del índice | Depende del vocabulario (puede ser grande) | Fijo: 768 dims por documento |
+| Matching | "náusea" no matchea con "arcada" | Ambas tienen vectores cercanos |
+
+### Cuándo TF-IDF podría haber sido útil
+
+En un escenario con recursos muy limitados (sin GPU, con RAM < 8 GB), TF-IDF sería una alternativa viable porque:
+
+- No requiere GPU
+- Ocupa menos RAM (el vocabulario es más compacto que 375k × 768 floats)
+- No necesita descargar un modelo de ~1.1 GB
+
+Pero sacrificaría calidad de retrieval — especialmente en un corpus multilingüe donde el mismo concepto médico se expresa con palabras distintas en español, inglés y chino.
+
+### Conclusión
+
+TF-IDF es una técnica de recuperación de información clásica. Funciona bien para búsqueda por palabras clave en corpus pequeños y monolingües. No se usó porque el proyecto necesita búsqueda semántica multilingüe, y el hardware disponible (RTX 2050, 16 GB RAM) permite ejecutar embeddings densos sin problemas.
+
+---
+
+## Q16: ¿Qué es TF-IDF y cómo funciona? (contexto académico)
+
+**Respuesta:**
+
+TF-IDF (Term Frequency — Inverse Document Frequency) es un método clásico de recuperación de información que convierte texto en vectores numéricos basándose en la frecuencia de palabras.
+
+### Cómo funciona
+
+**TF (Term Frequency):** cuántas veces aparece una palabra en un documento específico. Si "preeclampsia" aparece 5 veces en un caso clínico de 100 palabras, su TF es 5/100 = 0.05.
+
+**IDF (Inverse Document Frequency):** qué tan rara o común es una palabra en todo el corpus. "preeclampsia" aparece en pocos documentos → IDF alto. "la" aparece en casi todos → IDF bajo (casi cero).
+
+**TF-IDF = TF × IDF.** Una palabra obtiene peso alto si aparece frecuentemente en un documento específico pero es rara en el corpus general. Esto filtra palabras vacías (artículos, preposiciones) y destaca términos relevantes del documento.
+
+### Limitaciones frente al enfoque usado en Maternas
+
+1. **No captura sinónimos:** una pregunta sobre "hipertensión gestacional" no matchearía con un documento que solo menciona "preeclampsia", aunque sean el mismo tema.
+2. **No captura contexto:** la palabra "sangrado" tiene el mismo vector sin importar si aparece en "tengo sangrado abundante" o en "ya no tengo sangrado".
+3. **Vocabulario por idioma:** un índice TF-IDF en español no sirve para consultas en chino. Los embeddings multilingües resuelven esto.
+4. **Dimensionalidad variable:** el vector TF-IDF crece con el vocabulario del corpus (puede ser de cientos de miles de dimensiones). Los embeddings densos tienen dimensionalidad fija (768) y son más eficientes para búsqueda en índices como FAISS.
+
+---
+
+## Q17: ¿Se usa clustering de vectores en el proyecto?
+
+**Respuesta:**
+
+**No.** No hay clustering en el proyecto. Ni en el código fuente ni en las dependencias. El índice FAISS es `IndexFlatIP` — una estructura plana donde todos los vectores se almacenan en una sola lista y la búsqueda compara la query contra **todos** los vectores (fuerza bruta exacta).
+
+No hay `KMeans`, `DBSCAN`, `HDBSCAN`, `AgglomerativeClustering` ni ninguna otra técnica de agrupamiento. Tampoco se usa `IndexIVFFlat` (que sí usa clustering internamente para particionar).
+
+### Por qué no se necesita
+
+El índice actual tiene **375,392 vectores**. La búsqueda exacta en `IndexFlatIP` tarda ~20-50ms en GPU (vía FAISS con AVX2) para cada query. Eso es más que suficientemente rápido para el objetivo de latencia (< 8s por turno).
+
+```python
+# El buscador es simplemente:
+scores, ids = index.search(query_vector, k=5)   # compara contra todos
+```
+
+No hay necesidad de clustering porque el índice cabe completo en RAM (~1.15 GB de 16 GB disponibles) y el tiempo de búsqueda es despreciable frente al ~2-4s totales del turno.
+
+### Cuándo se necesitaría clustering
+
+Si el índice creciera a **millones** de vectores, la búsqueda exacta empezaría a ser lenta (ej. 10M vectores → ~1-2s solo la búsqueda). Ahí entrarían dos opciones con clustering:
+
+**Opción 1: `IndexIVFFlat` (clustering interno de FAISS)**
+- Durante la construcción, FAISS aplica K-Means para dividir los vectores en `n` grupos (ej. 4096)
+- En búsqueda, solo compara contra los vectores del grupo más cercano a la query
+- Intercambia exactitud por velocidad: ajustando `nprobe` (cuántos grupos revisar) se controla el balance
+- La pérdida de recall es típicamente < 5% con `nprobe=10`
+
+**Opción 2: Clustering externo previo**
+- Agrupar los fragmentos por tema (ej. "nutrición", "preeclampsia", "lactancia")
+- Enrutar la query al grupo correcto antes de buscar en FAISS
+- Esto ya se hace implícitamente con el clasificador de intención — la intención no dirige a un cluster distinto, pero el LLM recibe contexto filtrado
+
+### Conclusión
+
+Para 375k vectores y latencia objetivo de < 8s, `IndexFlatIP` es la opción correcta. Clustering agregaría complejidad sin beneficio real. Si el proyecto escalara a millones de vectores en el futuro, se migraría a `IndexIVFFlat` (que está disponible en la misma librería FAISS y no requiere cambios en el resto del sistema).
+
+---
+
+---
+
+## Q18: ¿Cómo funciona la integración con Telegram?
+
+**Respuesta:**
+
+El bot de Telegram se implementó el 3 de junio de 2026 en `src/bot/maternas_bot.py` usando la librería `python-telegram-bot`.
+
+### Arquitectura
+
+```
+Usuario Telegram → Bot API → polling (python-telegram-bot) → POST /chat → FastAPI → RAG chain → respuesta → Telegram
+```
+
+El bot no implementa lógica RAG propia — es un **cliente ligero** que envía cada mensaje al endpoint `POST /chat` de la API REST de Maternas (FastAPI) y muestra la respuesta al usuario.
+
+### Características
+
+| Aspecto | Detalle |
+|---|---|
+| Método | Polling (sin webhook, sin servidor público) |
+| Librería | `python-telegram-bot==21.11.1` |
+| Historial | En RAM por `user_id` (diccionario en memoria, se pierde al reiniciar el bot) |
+| Formato | Header informativo en HTML (negritas, itálicas controladas) + cuerpo de respuesta en texto plano |
+| Comandos | `/start` — bienvenida, `/help` — instrucciones, `/reset` — reinicia historial, `/stats` — estadísticas del bot |
+| Manejo de errores | Si la API falla, responde con mensaje de error amigable sin crashear |
+
+### Por qué mensajes separados (HTML + texto plano)
+
+El LLM de Groq genera respuestas en markdown impredecible (a veces mezcla `*`, `_`, `**` de forma inconsistente). Telegram parsea markdown estrictamente y cualquier error de formato hace que el mensaje completo falle con `BadRequest`.
+
+Solución: se envían **dos mensajes**:
+1. **Header en HTML** (controlado por el código): nombre del bot, badge de riesgo, advertencias — formateo seguro porque lo genera Python, no el LLM.
+2. **Cuerpo en texto plano**: la respuesta generada por el LLM, sin parseo. Telegram la muestra tal cual.
+
+Esto elimina por completo los errores `BadRequest: Can't parse entities` sin perder la experiencia de usuario.
+
+### Limitaciones actuales
+
+- **Historial volátil**: se almacena en un `defaultdict(list)` en RAM. Si el bot se reinicia, todas las conversaciones se pierden. Para producción se migraría a Redis o SQLite.
+- **Sin manejo de grupos**: el bot responde en cualquier chat donde esté agregado. No hay filtro por chat_id.
+- **Sin rate limiting**: no hay throttle de mensajes por usuario.
+- **Sin logs persistentes**: los logs van a stdout/stderr.
+
+### Inicio
+
+```bash
+# Terminal 1: API
+python -m uvicorn src.api.main:app --port 8080
+
+# Terminal 2: Bot
+python src/bot/maternas_bot.py
+```
+
+El token se lee de `settings.TELEGRAM_BOT_TOKEN` (configurado en `.env`).
+
+---
+
 *Última actualización: 3 de junio de 2026*
