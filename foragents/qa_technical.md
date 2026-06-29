@@ -601,4 +601,71 @@ El token se lee de `settings.TELEGRAM_BOT_TOKEN` (configurado en `.env`).
 
 ---
 
+## Q19: ¿Qué necesita otra persona para clonar y correr el proyecto desde cero (con embeddings ya generados)?
+
+**Respuesta:**
+
+Los embeddings (índice FAISS + metadatos) se compartieron por WeTransfer (~1.6 GB comprimido). Con eso, la nueva persona **no necesita ejecutar la ingestión** — solo descargar, extraer y arrancar.
+
+### Paso a paso
+
+```bash
+# 1. Clonar el repositorio
+git clone https://github.com/elrios893/maternas-rag.git
+cd maternas-rag
+
+# 2. Crear entorno virtual con Python 3.12.7
+py -3.12 -m venv venv
+.\venv\Scripts\activate
+
+# 3. Instalar PyTorch con CUDA (RTX 2050, 4 GB VRAM)
+#    Si no tiene GPU, instalar torch sin --index-url
+pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Instalar sentence-transformers 2.7.0 (la versión 3.x falla con torch)
+pip install sentence-transformers==2.7.0
+
+# 5. Instalar el resto de dependencias
+pip install -r requirements.txt
+
+# 6. Configurar .env
+copy .env.example .env
+# Editar .env: poner GROQ_API_KEY real (https://console.groq.com)
+# IMPORTANTE: generar una NUEVA clave, no usar la que está en este documento
+# EMBEDDING_DEVICE=cuda (o cpu si no tiene GPU NVIDIA)
+
+# 7. Extraer el índice FAISS (archivo de WeTransfer)
+#    Dejar la carpeta faiss_store/ en la raíz del proyecto:
+#    faiss_store/
+#    ├── index.faiss      (~1.15 GB)
+#    ├── metadata.pkl     (~431 MB)
+#    └── build_info.json
+
+# 8. Verificar integridad del índice (opcional)
+python -c "import pickle; d=pickle.load(open('faiss_store/metadata.pkl','rb')); print(f'{len(d)} vectores en metadata')"
+# Debe mostrar: 375392 vectores en metadata
+```
+
+### Arranque
+
+```bash
+# Terminal 1: API
+python -m uvicorn src.api.main:app --port 8080
+
+# Terminal 2: Streamlit (opcional)
+streamlit run src/ui/app.py
+
+# Terminal 3: Telegram bot (opcional, requiere TELEGRAM_BOT_TOKEN en .env)
+python src/bot/maternas_bot.py
+```
+
+### Notas importantes
+
+- **GROQ_API_KEY**: la clave actual expuesta en este Q&A ya fue regenerada. Quien clone el proyecto debe crear su propia clave en https://console.groq.com (tier gratuito: ~30 requests/minuto, ~6000/día — suficiente para desarrollo).
+- **sentence-transformers 2.7.0 obligatorio**: la versión 3.3.1 del `requirements.txt` es la que estaba instalada al inicio del proyecto, pero produce un cuelge silencioso al importar con torch cargado. La solución es instalar 2.7.0 **antes** que el resto de dependencias.
+- **CUDA 12.1**: el índice se generó con `multilingual-e5-base` en CUDA. Si la nueva máquina no tiene GPU NVIDIA, cambiar `EMBEDDING_DEVICE=cpu` en `.env`. El embedding será más lento (~200-400ms por query en vez de ~50ms) pero funcional.
+- **FAISS CPU vs GPU**: el índice usa `faiss-cpu`. La búsqueda se hace en CPU aunque el embedding esté en GPU. No necesita CUDA para FAISS.
+
+---
+
 *Última actualización: 3 de junio de 2026*
