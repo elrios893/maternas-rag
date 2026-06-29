@@ -13,6 +13,7 @@ Responsabilidades:
 
 import numpy as np
 from typing import List
+import torch
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
@@ -26,13 +27,22 @@ from src.settings import settings
 _model: SentenceTransformer | None = None
 
 
+def _resolve_device() -> str:
+    device = settings.embedding_device.lower().strip()
+    if device == "cuda" and not torch.cuda.is_available():
+        print("[Embedder] CUDA no está disponible; usando CPU.")
+        return "cpu"
+    return device
+
+
 def _get_model() -> SentenceTransformer:
     global _model
     if _model is None:
-        print(f"[Embedder] Cargando modelo '{settings.embedding_model}' en {settings.embedding_device}...")
+        device = _resolve_device()
+        print(f"[Embedder] Cargando modelo '{settings.embedding_model}' en {device}...")
         _model = SentenceTransformer(
             settings.embedding_model,
-            device=settings.embedding_device,
+            device=device,
         )
         print(f"[Embedder] Modelo cargado. Dimensión de salida: {_model.get_sentence_embedding_dimension()}")
     return _model
