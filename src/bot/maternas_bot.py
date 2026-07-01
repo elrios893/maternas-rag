@@ -28,6 +28,8 @@ from telegram import Update, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from src.settings import settings
 
+from src.bot.active_users import register as register_active_user  # scheduler integration
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -146,6 +148,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    register_active_user(user_id)  # scheduler integration
     text    = update.message.text.strip()
 
     if not text:

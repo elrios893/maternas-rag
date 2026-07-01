@@ -35,6 +35,9 @@ streamlit==1.41.1
 # --- Evaluación ---
 ragas==0.2.12
 
+# --- Scheduler ---
+apscheduler==3.10.4
+
 # --- Data & Utils ---
 numpy==2.4.6
 pandas==2.3.3
