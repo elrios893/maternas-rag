@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
+    # --- Notifier (Skill) ---
+    notifier_enabled: bool = Field(True, env="NOTIFIER_ENABLED")
+    notifier_email_to: str = Field("", env="NOTIFIER_EMAIL_TO")
+    notifier_smtp_host: str = Field("smtp.gmail.com", env="NOTIFIER_SMTP_HOST")
+    notifier_smtp_port: int = Field(587, env="NOTIFIER_SMTP_PORT")
+    notifier_smtp_user: str = Field("", env="NOTIFIER_SMTP_USER")
+    notifier_smtp_password: str = Field("", env="NOTIFIER_SMTP_PASSWORD")
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

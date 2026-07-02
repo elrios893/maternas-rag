@@ -84,6 +84,30 @@ query → classify_intent() → detect_risk() → FAISS retrieve() → Groq LLM 
 - **Riesgo MEDIUM** → respuesta con recomendación de consulta médica
 - **Riesgo LOW** → respuesta educativa con citas a la fuente
 
+## Skill System
+
+Arquitectura extensible de herramientas (`tools`) agrupadas en habilidades (`skills`). Cada skill vive en `src/skills/<nombre>/` y expone tools registrables con nombre, descripción, esquema de parámetros y función asociada.
+
+### Notifier (notificaciones por email)
+
+Envío de alertas SMTP cuando se detecta riesgo clínico alto:
+- **Risk HIGH** → notificación automática siempre
+- **Risk MEDIUM** → una llamada adicional al LLM decide si amerita notificar
+- **Risk LOW** → no notifica
+
+Configuración en `.env` con prefijo `NOTIFIER_*`. Por defecto remitente y destinatario son la misma cuenta Google (`maternasrag@gmail.com`).
+
+### Crear una skill nueva
+
+```
+src/skills/mi_skill/
+├── __init__.py
+├── skill.py      # Skill(name, desc, tools=[ToolSpec(...)])
+└── tool.py       # Implementación de la función
+```
+
+Registrar en `ToolRegistry` y ejecutar desde `chain.py` vía `ToolRegistry.execute("tool_name", ...)`.
+
 ## Siguientes mejoras
 - **Integración con telegram** → Chatbot especializado en telegram.
 - **Fine-tunning con QLORA**

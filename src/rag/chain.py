@@ -40,6 +40,8 @@ from src.classifiers.intent_classifier import classify_intent, IntentResult
 from src.classifiers.risk_detector import detect_risk, RiskResult
 from src.rag.retriever import retrieve, format_context, source_label
 from src.settings import settings
+from src.skills import ToolRegistry
+import src.skills.notifier  # noqa: F401 — registra tools del notifier
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,7 @@ class ChatResponse:
     sources:      list[dict] = field(default_factory=list)   # docs recuperados (sin text para ahorrar espacio)
     reasoning:    str = ""                 # reasoning del clasificador de riesgo
     tokens_used:  int = 0
+    notified:     bool = False             # si se envió notificación por riesgo
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +193,46 @@ def chat(
     risk_result: RiskResult = detect_risk(query, intent=intent_result.intent)
     logger.info(f"[Chain] risk={risk_result.level} action={risk_result.action}")
 
+    # ---------------------------------------------------------------------------
+    # Notificación por riesgo clínico
+    # ---------------------------------------------------------------------------
+
+    NOTIFY_PROMPT = (
+        "Eres un clasificador medico. Decide si este mensaje de una paciente "
+        "amerita notificar a un clinico para revision.\n\n"
+        "Contexto:\n"
+        f"- Nivel de riesgo: {risk_result.level}\n"
+        f"- Intencion: {intent_result.intent}\n"
+        f"- Razonamiento: {risk_result.reasoning}\n"
+        f"- Banderas: {risk_result.flags}\n\n"
+        f"Mensaje de la paciente:\n{query}\n\n"
+        "Responde SOLO con 'YES' si un medico debe revisar este caso, "
+        "o 'NO' si no es necesario."
+    )
+    notified = False
+    if risk_result.level == "high":
+        ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
+                             intent=intent_result.intent, reasoning=risk_result.reasoning,
+                             flags=risk_result.flags)
+        notified = True
+    elif risk_result.level == "medium":
+        client = _get_client()
+        try:
+            resp = client.chat.completions.create(
+                model=settings.groq_model,
+                messages=[{"role": "user", "content": NOTIFY_PROMPT}],
+                temperature=0,
+                max_tokens=10,
+            )
+            decision = resp.choices[0].message.content.strip().upper()
+            if "YES" in decision:
+                ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
+                                     intent=intent_result.intent, reasoning=risk_result.reasoning,
+                                     flags=risk_result.flags)
+                notified = True
+        except Exception as e:
+            logger.warning(f"[Chain] Error en decision de notificacion medium: {e}")
+
     # 3. Recuperar fragmentos relevantes
     # Para preguntas fuera de alcance recuperamos igualmente por si acaso
     docs = retrieve(query, k=k)
@@ -243,6 +286,7 @@ def chat(
         sources=sources,
         reasoning=risk_result.reasoning,
         tokens_used=tokens_used,
+        notified=notified,
     )
 
 
