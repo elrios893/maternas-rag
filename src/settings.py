@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
-    # --- Status Check Scheduler (riesgo acumulado) ---
+    # --- Status Check Scheduler (unificado en bot) ---
+    # NOTA: Las vars *_minutes se mantienen por compatibilidad con .envs
+    # existentes. El scheduler unificado usa las vars *_seconds definidas abajo.
     status_check_base_interval_minutes: float = Field(60.0, env="STATUS_CHECK_BASE_INTERVAL_MINUTES")
     status_check_min_interval_minutes: float = Field(5.0, env="STATUS_CHECK_MIN_INTERVAL_MINUTES")
     status_check_message: str = Field(
@@ -45,6 +47,12 @@ class Settings(BaseSettings):
         "Cuéntame cualquier molestia o duda que tengas.",
         env="STATUS_CHECK_MESSAGE",
     )
+
+    # --- Status Check Scheduler (unificado — intervalos por nivel de riesgo) ---
+    # Valores bajos para desarrollo/pruebas. En producción subir a minutos.
+    status_check_interval_low_seconds: float = Field(60.0, env="STATUS_CHECK_INTERVAL_LOW_SECONDS")
+    status_check_interval_medium_seconds: float = Field(45.0, env="STATUS_CHECK_INTERVAL_MEDIUM_SECONDS")
+    status_check_interval_high_seconds: float = Field(30.0, env="STATUS_CHECK_INTERVAL_HIGH_SECONDS")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

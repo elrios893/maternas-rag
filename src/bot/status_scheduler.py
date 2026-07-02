@@ -1,21 +1,27 @@
 """
-status_scheduler.py — Envío periódico de check de estado vía Telegram.
+status_scheduler.py — [DEPRECADO] Envío periódico de check de estado.
 
-Usa APScheduler con un job independiente por usuario, cada uno con su
-propio intervalo según riesgo acumulado. Los jobs se ejecutan en paralelo
-a través del thread pool de APScheduler.
+⚠️  Este módulo está deprecado. El scheduler ahora está integrado
+    directamente en maternas_bot.py usando la JobQueue nativa de
+    python-telegram-bot (basada en APScheduler).
 
-Un job de sync periódico detecta usuarios nuevos, cambios de riesgo
-o usuarios eliminados y ajusta los jobs automáticamente.
+    Ya no es necesario ejecutar este archivo por separado.
+    El bot maneja todo automáticamente al iniciar.
 
-Arrancar:
-    python src/bot/status_scheduler.py
+    Variables de entorno activas (nuevas):
+        STATUS_CHECK_INTERVAL_LOW_SECONDS     (default: 60)
+        STATUS_CHECK_INTERVAL_MEDIUM_SECONDS  (default: 45)
+        STATUS_CHECK_INTERVAL_HIGH_SECONDS    (default: 30)
 
-Variables de entorno (ver .env.example):
-    TELEGRAM_BOT_TOKEN                   — token del bot (requerido)
-    STATUS_CHECK_BASE_INTERVAL_MINUTES   — intervalo base en min (default: 60)
-    STATUS_CHECK_MIN_INTERVAL_MINUTES    — intervalo mínimo en min (default: 5)
-    STATUS_CHECK_MESSAGE                 — texto del mensaje en Markdown
+    Las viejas STATUS_CHECK_BASE_INTERVAL_MINUTES y
+    STATUS_CHECK_MIN_INTERVAL_MINUTES se mantienen en settings.py
+    solo por compatibilidad — el scheduler unificado no las usa.
+
+Motivo de la unificación:
+    - Un solo proceso (bot + scheduler) en vez de dos
+    - Reutiliza el mismo cliente de Telegram (context.bot)
+    - Sincronización automática sin HTTP requests separados
+    - El scheduler solo envía mensajes si la API responde (congruencia)
 """
 
 from __future__ import annotations

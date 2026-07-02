@@ -1,0 +1,12 @@
+{
+  "5176322401": {
+    "risk_points": 22,
+    "latest_risk_level": "medium",
+    "latest_risk_flags": [
+      "hemorragia activa",
+      "dolor abdominal agudo"
+    ],
+    "last_activity": "2026-07-02T22:37:21+00:00",
+    "last_check_sent": "2026-07-02T22:45:01+00:00"
+  }
+}
