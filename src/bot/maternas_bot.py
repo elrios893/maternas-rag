@@ -148,7 +148,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    register_active_user(user_id)  # scheduler integration
     text    = update.message.text.strip()
 
     if not text:
@@ -174,9 +173,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Armar respuesta
     answer = result.get("answer", "No se pudo generar una respuesta.")
     level  = result.get("risk_level", "low")
+    flags  = result.get("risk_flags", [])
+    register_active_user(user_id, risk_level=level, risk_flags=flags)  # scheduler integration
     intent = result.get("intent", "")
     action = result.get("action", "")
-    flags  = result.get("risk_flags", [])
 
     # Header con parse_mode HTML (controlado, no puede fallar)
     if level == "high":

@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
-    # --- Status Check Scheduler ---
-    status_check_interval_minutes: float = Field(10.0, env="STATUS_CHECK_INTERVAL_MINUTES")
+    # --- Status Check Scheduler (riesgo acumulado) ---
+    status_check_base_interval_minutes: float = Field(60.0, env="STATUS_CHECK_BASE_INTERVAL_MINUTES")
+    status_check_min_interval_minutes: float = Field(5.0, env="STATUS_CHECK_MIN_INTERVAL_MINUTES")
     status_check_message: str = Field(
         "🩺 *Check de estado* — ¿Cómo te encuentras hoy? "
         "Cuéntame cualquier molestia o duda que tengas.",

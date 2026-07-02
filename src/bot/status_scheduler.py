@@ -1,19 +1,21 @@
 """
 status_scheduler.py — Envío periódico de check de estado vía Telegram.
 
-Usa APScheduler para enviar un mensaje configurable a TODOS los usuarios
-que han interactuado con el bot, en intervalos regulares.
+Usa APScheduler con un job independiente por usuario, cada uno con su
+propio intervalo según riesgo acumulado. Los jobs se ejecutan en paralelo
+a través del thread pool de APScheduler.
 
-El registro de usuarios activos se mantiene en active_users.json,
-actualizado por el bot cuando alguien le escribe.
+Un job de sync periódico detecta usuarios nuevos, cambios de riesgo
+o usuarios eliminados y ajusta los jobs automáticamente.
 
 Arrancar:
     python src/bot/status_scheduler.py
 
 Variables de entorno (ver .env.example):
-    TELEGRAM_BOT_TOKEN            — token del bot (requerido)
-    STATUS_CHECK_INTERVAL_MINUTES — intervalo en minutos (default: 10, usar 0.5 = 30 s)
-    STATUS_CHECK_MESSAGE          — texto del mensaje en Markdown (default: ver abajo)
+    TELEGRAM_BOT_TOKEN                   — token del bot (requerido)
+    STATUS_CHECK_BASE_INTERVAL_MINUTES   — intervalo base en min (default: 60)
+    STATUS_CHECK_MIN_INTERVAL_MINUTES    — intervalo mínimo en min (default: 5)
+    STATUS_CHECK_MESSAGE                 — texto del mensaje en Markdown
 """
 
 from __future__ import annotations
@@ -24,10 +26,11 @@ from pathlib import Path
 
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.jobstores.base import JobLookupError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.bot.active_users import get_all  # noqa: E402
+from src.bot.active_users import get_all, update_check_sent  # noqa: E402
 from src.settings import settings  # noqa: E402
 
 logging.basicConfig(
@@ -36,66 +39,91 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 TOKEN = settings.telegram_bot_token
-INTERVAL_MINUTES = settings.status_check_interval_minutes
+BASE_INTERVAL = settings.status_check_base_interval_minutes
+MIN_INTERVAL = settings.status_check_min_interval_minutes
 MESSAGE = settings.status_check_message
 
-# ---------------------------------------------------------------------------
-# Envío del mensaje a todos los usuarios activos
-# ---------------------------------------------------------------------------
+# chat_id -> {"job_id": str, "last_risk_points": int}
+_user_jobs: dict[str, dict] = {}
+
+scheduler = BlockingScheduler()
 
 
-def send_status_check() -> None:
+def _user_interval(risk_points: int) -> float:
+    return max(MIN_INTERVAL, BASE_INTERVAL / (1 + risk_points / 10))
+
+
+def _send_to_user(chat_id: str) -> None:
     if not TOKEN:
-        logger.warning("TELEGRAM_BOT_TOKEN no configurado")
-        return
-
-    users = get_all()
-    if not users:
-        logger.info("No hay usuarios activos registrados aún")
         return
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    success = 0
-    failed = 0
+    payload = {
+        "chat_id": int(chat_id),
+        "text": MESSAGE,
+        "parse_mode": "Markdown",
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code == 200:
+            update_check_sent(int(chat_id))
+            logger.debug("Check enviado a %s", chat_id)
+        else:
+            logger.error("Error al enviar a %s: HTTP %s", chat_id, resp.status_code)
+    except requests.RequestException as e:
+        logger.error("Error de conexión al enviar a %s: %s", chat_id, e)
 
-    for chat_id in users:
-        payload = {
-            "chat_id": chat_id,
-            "text": MESSAGE,
-            "parse_mode": "Markdown",
-        }
+
+def _add_user_job(chat_id: str, risk_points: int) -> None:
+    interval = _user_interval(risk_points)
+    job_id = f"user_{chat_id}"
+    try:
+        scheduler.add_job(
+            _send_to_user,
+            "interval",
+            minutes=interval,
+            id=job_id,
+            args=[chat_id],
+            replace_existing=True,
+            name=f"Check usuario {chat_id} (riesgo {risk_points})",
+        )
+        _user_jobs[chat_id] = {"job_id": job_id, "last_risk_points": risk_points}
+        logger.debug("Job creado para %s cada %.1f min", chat_id, interval)
+    except Exception as e:
+        logger.error("Error creando job para %s: %s", chat_id, e)
+
+
+def _remove_user_job(chat_id: str) -> None:
+    info = _user_jobs.pop(chat_id, None)
+    if info:
         try:
-            resp = requests.post(url, json=payload, timeout=15)
-            if resp.status_code == 200:
-                success += 1
-            else:
-                failed += 1
-                logger.error(
-                    "Error al enviar a %s: HTTP %s — %s",
-                    chat_id,
-                    resp.status_code,
-                    resp.text[:200],
-                )
-        except requests.RequestException as e:
-            failed += 1
-            logger.error("Error de conexión al enviar a %s: %s", chat_id, e)
-
-    logger.info(
-        "Check de estado enviado a %d usuario(s): %d ok, %d error(es)",
-        len(users),
-        success,
-        failed,
-    )
+            scheduler.remove_job(info["job_id"])
+            logger.debug("Job eliminado para %s", chat_id)
+        except JobLookupError:
+            pass
 
 
-# ---------------------------------------------------------------------------
-# Inicio
-# ---------------------------------------------------------------------------
+def _sync_users() -> None:
+    users = get_all()
+    active = set(users.keys())
+    existing = set(_user_jobs.keys())
+
+    # Eliminar jobs de usuarios que ya no existen
+    for chat_id in existing - active:
+        _remove_user_job(chat_id)
+
+    # Crear o actualizar jobs
+    for chat_id, user_data in users.items():
+        risk_points = user_data.get("risk_points", 0)
+
+        if chat_id not in existing:
+            _add_user_job(chat_id, risk_points)
+        else:
+            old_risk = _user_jobs[chat_id].get("last_risk_points", 0)
+            if old_risk != risk_points:
+                _remove_user_job(chat_id)
+                _add_user_job(chat_id, risk_points)
 
 
 def main() -> None:
@@ -103,20 +131,21 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN no configurado en .env")
         sys.exit(1)
 
-    scheduler = BlockingScheduler()
+    # Sincronización inicial
+    _sync_users()
 
+    # Sync periódico cada 15s para detectar nuevos usuarios o cambios de riesgo
     scheduler.add_job(
-        send_status_check,
+        _sync_users,
         "interval",
-        minutes=INTERVAL_MINUTES,
-        id="status_check",
-        name="Envío periódico de check de estado",
+        seconds=15,
+        id="sync_users",
+        name="Sincronización de usuarios activos",
     )
 
     logger.info(
-        "Scheduler iniciado — enviando cada %s minuto(s) a %d usuario(s) registrado(s)",
-        INTERVAL_MINUTES,
-        len(get_all()),
+        "Scheduler iniciado — base=%.1f min, min=%.1f min, %d usuario(s)",
+        BASE_INTERVAL, MIN_INTERVAL, len(_user_jobs),
     )
     logger.info("Presiona Ctrl+C para detener.")
 
