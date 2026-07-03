@@ -51,15 +51,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ChatResponse:
-    answer:       str                      # Respuesta generada al usuario
-    intent:       str                      # Intención clasificada
-    risk_level:   str                      # "low" | "medium" | "high"
-    action:       str                      # "educational_answer" | "medical_consultation" | "urgent_care"
-    risk_flags:   list[str] = field(default_factory=list)
-    sources:      list[dict] = field(default_factory=list)   # docs recuperados (sin text para ahorrar espacio)
-    reasoning:    str = ""                 # reasoning del clasificador de riesgo
-    tokens_used:  int = 0
-    notified:     bool = False             # si se envió notificación por riesgo
+    answer:                  str                    # Respuesta generada al usuario
+    intent:                  str                    # Intención clasificada
+    risk_level:              str                    # "low" | "medium" | "high"
+    action:                  str                    # "educational_answer" | "medical_consultation" | "urgent_care"
+    risk_flags:              list[str] = field(default_factory=list)
+    sources:                 list[dict] = field(default_factory=list)
+    reasoning:               str = ""
+    tokens_used:             int = 0
+    notified:                bool = False
+    needs_clarification:     bool = False           # True → el sistema pide más info antes de responder
+    clarification_question:  str = ""               # Pregunta empática para el usuario
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +111,124 @@ MEDIUM_SUFFIX = (
     "\n\nNOTA: El mensaje sugiere un sintoma que merece evaluacion medica. "
     "Incluye al final una recomendacion breve de consultar con su medico o matrona."
 )
+
+
+# ---------------------------------------------------------------------------
+# Clarificación — reglas por intent y lógica de detección
+# ---------------------------------------------------------------------------
+
+# Intents donde nunca se pide clarificación (actuar de inmediato)
+NEVER_CLARIFY = {"signos_de_alarma"}
+
+# Intent → información mínima esperada para responder bien
+# Si la query es corta Y no menciona ninguna de esas keywords, se activa la regla
+CLARIFICATION_RULES: dict[str, dict] = {
+    "medicamentos": {
+        "min_tokens": 6,
+        "keywords": ["para", "semana", "trimestre", "embarazo", "lactancia",
+                     "dolor", "nausea", "fiebre", "infeccion", "gripa"],
+        "missing_info": ["el síntoma o motivo", "en qué semana de gestación estás"],
+    },
+    "sintomas_embarazo": {
+        "min_tokens": 5,
+        "keywords": ["semana", "trimestre", "mes", "hace", "dias", "horas",
+                     "primer", "segundo", "tercer", "meses"],
+        "missing_info": ["cuántas semanas de gestación tienes"],
+    },
+    "control_prenatal": {
+        "min_tokens": 6,
+        "keywords": ["semana", "mes", "primera", "segunda", "vez", "trimestre",
+                     "cuantas", "cuando", "proxima"],
+        "missing_info": ["en qué semana o mes de embarazo estás"],
+    },
+    "nutricion": {
+        "min_tokens": 5,
+        "keywords": ["embarazo", "lactancia", "semana", "trimestre", "puedo",
+                     "debo", "evitar", "comer", "tomar"],
+        "missing_info": ["si estás embarazada o en periodo de lactancia"],
+    },
+    "actividad_fisica": {
+        "min_tokens": 5,
+        "keywords": ["semana", "trimestre", "mes", "cuantas", "embarazo",
+                     "puedo", "seguro", "riesgo"],
+        "missing_info": ["en qué trimestre de embarazo estás"],
+    },
+    "salud_mental_perinatal": {
+        "min_tokens": 5,
+        "keywords": ["semana", "parto", "embarazo", "bebe", "hace", "dias",
+                     "meses", "postparto", "desde"],
+        "missing_info": ["si estás embarazada o en el postparto, y hace cuánto tiempo sientes esto"],
+    },
+}
+
+
+def _should_clarify(query: str, intent: str, risk_level: str) -> bool:
+    """
+    Determina si se debe pedir clarificación antes de responder.
+
+    Reglas:
+    - Nunca clarificar si risk != low (urgente o medio → responder siempre)
+    - Nunca clarificar para intents en NEVER_CLARIFY
+    - Nunca clarificar si la query ya es larga (≥ 20 tokens) — tiene suficiente contexto
+    - Clarificar si el intent está en CLARIFICATION_RULES Y la query es corta
+      Y no menciona ninguna keyword de contexto esperada
+    """
+    if risk_level != "low":
+        return False
+    if intent in NEVER_CLARIFY:
+        return False
+
+    rule = CLARIFICATION_RULES.get(intent)
+    if not rule:
+        return False
+
+    tokens = query.lower().split()
+    if len(tokens) >= 20:
+        return False
+
+    # Si la query tiene pocos tokens Y ninguna keyword de contexto → clarificar
+    has_context = any(kw in query.lower() for kw in rule["keywords"])
+    if len(tokens) < rule["min_tokens"] or not has_context:
+        return True
+
+    return False
+
+
+def _generate_clarification(
+    query: str,
+    intent: str,
+    risk_level: str,
+) -> str:
+    """
+    Genera una pregunta de clarificación empática y específica usando el LLM.
+    Se llama solo cuando _should_clarify() devuelve True.
+    """
+    rule = CLARIFICATION_RULES.get(intent, {})
+    missing = rule.get("missing_info", ["más información"])
+    missing_str = " y ".join(missing)
+
+    prompt = (
+        "Eres Maternas, una asistente de salud calida y empatica para madres gestantes.\n\n"
+        f"Una usuaria escribio: '{query}'\n\n"
+        f"Para poder ayudarla bien, necesitas saber: {missing_str}.\n\n"
+        "Escribe UNA sola pregunta de clarificacion, en espanol, con tono calido y cercano. "
+        "Maximo 2 oraciones. No repitas la pregunta del usuario. "
+        "No digas que eres una IA. Solo haz la pregunta de forma natural y amigable."
+    )
+
+    try:
+        client = _get_client()
+        resp = client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=100,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"[Chain] Error generando clarificacion: {e}")
+        # Fallback determinista si el LLM falla
+        return f"Con gusto te ayudo. Para darte la mejor respuesta, ¿podrías contarme {missing_str}?"
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +326,23 @@ def chat(
     # 2. Detectar riesgo
     risk_result: RiskResult = detect_risk(query, intent=intent_result.intent)
     logger.info(f"[Chain] risk={risk_result.level} action={risk_result.action}")
+
+    # ---------------------------------------------------------------------------
+    # 2b. Clarificación — pedir más contexto si la query es vaga
+    # ---------------------------------------------------------------------------
+    if _should_clarify(query, intent_result.intent, risk_result.level):
+        clarification_q = _generate_clarification(query, intent_result.intent, risk_result.level)
+        logger.info(f"[Chain] Clarificacion activada para intent={intent_result.intent}")
+        return ChatResponse(
+            answer=clarification_q,
+            intent=intent_result.intent,
+            risk_level=risk_result.level,
+            action=risk_result.action,
+            risk_flags=risk_result.flags,
+            reasoning=risk_result.reasoning,
+            needs_clarification=True,
+            clarification_question=clarification_q,
+        )
 
     # ---------------------------------------------------------------------------
     # Notificación por riesgo clínico

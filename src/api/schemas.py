@@ -39,14 +39,17 @@ class SourceDoc(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    answer:      str
-    intent:      str
-    risk_level:  str
-    action:      str
-    risk_flags:  list[str]
-    sources:     list[SourceDoc]
-    reasoning:   str
-    tokens_used: int
+    answer:                 str
+    intent:                 str
+    risk_level:             str
+    action:                 str
+    risk_flags:             list[str]
+    sources:                list[SourceDoc]
+    reasoning:              str
+    tokens_used:            int
+    notified:               bool = False
+    needs_clarification:    bool = False
+    clarification_question: str = ""
 
 
 # ---------------------------------------------------------------------------

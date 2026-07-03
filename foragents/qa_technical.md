@@ -729,4 +729,83 @@ Se reforzó el system prompt con reglas explícitas de citación:
 
 ---
 
+## Q21: ¿Cómo funciona el sistema de preguntas de clarificación?
+
+**Respuesta:**
+
+Implementado el 3 de julio de 2026. Cuando la query del usuario es vaga o le falta contexto clínico clave, el sistema pide información adicional antes de recuperar fragmentos o generar respuesta.
+
+### El problema que resuelve
+
+Preguntas como *"me duele la cabeza"* o *"puedo tomar algo"* no tienen suficiente contexto para dar una respuesta útil y segura. Sin saber las semanas de gestación, el síntoma exacto o si está en lactancia, el LLM improvisa o da consejos genéricos poco útiles.
+
+### Arquitectura: opción híbrida (reglas + LLM)
+
+```
+query → classify_intent() → detect_risk()
+              │
+              ▼
+   _should_clarify(query, intent, risk_level)
+   ┌── Capa 1: reglas deterministicas ──────────────────────────────┐
+   │  - Si risk != "low" → False (urgente/medio: responder siempre) │
+   │  - Si intent en NEVER_CLARIFY → False                         │
+   │  - Si query >= 20 tokens → False (suficiente contexto)         │
+   │  - Si intent en CLARIFICATION_RULES Y query corta              │
+   │    Y no contiene keywords de contexto → True                   │
+   └────────────────────────────────────────────────────────────────┘
+              │ True                    │ False
+              ▼                         ▼
+   _generate_clarification()        flujo RAG normal
+   (LLM genera pregunta empática)
+              │
+              ▼
+   ChatResponse(
+     needs_clarification=True,
+     clarification_question="...",
+     answer=clarification_question   ← mismo texto, para que callers simples lo muestren
+   )
+```
+
+### CLARIFICATION_RULES
+
+Cada intent define:
+- `min_tokens`: si la query tiene menos tokens que este valor, se considera vaga
+- `keywords`: contexto esperado (semana, trimestre, síntoma...). Si no hay ninguno → clarificar
+- `missing_info`: qué información le falta (se pasa al LLM para generar la pregunta)
+
+| Intent | Activa si... |
+|---|---|
+| `medicamentos` | Query corta sin síntoma ni semana de gestación |
+| `sintomas_embarazo` | Query corta sin mención de semanas/trimestre |
+| `control_prenatal` | Query corta sin semana o trimestre |
+| `nutricion` | Query corta sin mencionar embarazo o lactancia |
+| `actividad_fisica` | Query corta sin trimestre |
+| `salud_mental_perinatal` | Query corta sin contexto temporal |
+
+### Casos especiales
+
+- **`signos_de_alarma`** → **nunca** pide clarificación. Si hay riesgo, se actúa de inmediato.
+- **Risk medium o high** → nunca pide clarificación. Responde con urgencia apropiada.
+- **Query >= 20 tokens** → se asume suficiente contexto, nunca clarifica.
+
+### Resultados de prueba
+
+| Query | Resultado |
+|---|---|
+| `"me duele la cabeza"` | ✅ Clarifica: *"¿Cuántas semanas de embarazo estás actualmente?"* |
+| `"puedo tomar algo"` | ✅ Clarifica: *"¿En qué semana de embarazo te encuentras y qué síntomas tienes?"* |
+| `"me siento triste"` | ✅ Clarifica: *"¿Cuánto tiempo has estado sintiéndote así y en qué momento del embarazo/postparto?"* |
+| `"me siento mal"` | ✅ NO clarifica — detector marcó risk=medium, responde de inmediato |
+| `"tengo 28 semanas y me duele la cabeza con visión borrosa"` | ✅ NO clarifica — suficiente contexto |
+| `"tengo sangrado abundante"` | ✅ NO clarifica — high risk, actúa de inmediato |
+
+### Cambios en el código
+
+- `src/rag/chain.py`: `CLARIFICATION_RULES`, `_should_clarify()`, `_generate_clarification()`, campos `needs_clarification` y `clarification_question` en `ChatResponse`
+- `src/api/schemas.py`: nuevos campos en `ChatResponse`
+- `src/ui/app.py`: burbuja amarilla diferenciada para preguntas de clarificación
+- `src/bot/maternas_bot.py`: muestra `💬 {pregunta}` sin header de riesgo cuando `needs_clarification=True`
+
+---
+
 *Última actualización: 3 de julio de 2026*

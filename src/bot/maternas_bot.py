@@ -162,20 +162,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Guardar en historial
-    if user_id not in histories:
-        histories[user_id] = []
-    histories[user_id].append({"role": "user", "content": text})
-    histories[user_id].append({"role": "assistant", "content": result.get("answer", "")})
+    answer             = result.get("answer", "No se pudo generar una respuesta.")
+    level              = result.get("risk_level", "low")
+    intent             = result.get("intent", "")
+    action             = result.get("action", "")
+    flags              = result.get("risk_flags", [])
+    needs_clarification = result.get("needs_clarification", False)
 
-    # Armar respuesta
-    answer = result.get("answer", "No se pudo generar una respuesta.")
-    level  = result.get("risk_level", "low")
-    intent = result.get("intent", "")
-    action = result.get("action", "")
-    flags  = result.get("risk_flags", [])
+    # Si el sistema pide clarificación, no guardamos en historial todavía
+    # — esperamos la respuesta del usuario al siguiente mensaje
+    if not needs_clarification:
+        if user_id not in histories:
+            histories[user_id] = []
+        histories[user_id].append({"role": "user",      "content": text})
+        histories[user_id].append({"role": "assistant", "content": answer})
 
-    # Header con parse_mode HTML (controlado, no puede fallar)
+    # Caso clarificación — mensaje especial sin header de riesgo
+    if needs_clarification:
+        await update.message.reply_text(
+            f"💬 {answer}"
+        )
+        return
+
+    # Armar header de riesgo
     if level == "high":
         header = (
             f"🚨 <b>🚨 RIESGO ALTO — BUSCA ATENCIÓN MÉDICA INMEDIATA 🚨</b>\n\n"
@@ -190,12 +199,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         header = f"{risk_emoji(level)} <b>{risk_label(level)}</b>\n\n"
 
-    # Enviar header con formato HTML
     await update.message.reply_text(header, parse_mode=constants.ParseMode.HTML)
-
-    # Enviar respuesta como texto plano (sin parse_mode para evitar errores del LLM)
-    max_chars = 4000
-    await update.message.reply_text(answer[:max_chars])
+    await update.message.reply_text(answer[:4000])
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(

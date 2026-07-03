@@ -77,12 +77,41 @@ El token se configura en `.env` como `TELEGRAM_BOT_TOKEN`.
 ## Flujo por turno
 
 ```
-query → classify_intent() → detect_risk() → FAISS retrieve() → Groq LLM → respuesta
+query → classify_intent() → detect_risk()
+              │
+              ├─ ¿query vaga? → pregunta de clarificación al usuario
+              │
+              └─ Búsqueda híbrida:
+                   FAISS densa (textbook + medmcqa + medqa)
+                 + BM25 léxico  (multiclinsum, solo si hay match exacto)
+                       │
+                       └─ Groq LLM → respuesta con citas [n]
 ```
 
-- **Riesgo HIGH** → alerta inmediata + respuesta de urgencia
-- **Riesgo MEDIUM** → respuesta con recomendación de consulta médica
+- **Riesgo HIGH** → alerta inmediata + notificación email + respuesta de urgencia
+- **Riesgo MEDIUM** → respuesta con recomendación médica (LLM decide si notificar)
 - **Riesgo LOW** → respuesta educativa con citas a la fuente
+
+## Retrieval híbrido
+
+El índice tiene 375,392 vectores de tres fuentes con naturaleza distinta. Para no contaminar el contexto con casos clínicos irrelevantes, se usa una estrategia de búsqueda por tipo de fuente:
+
+| Fuente | Estrategia | Motivo |
+|---|---|---|
+| `textbook`, `medmcqa`, `medqa_*` | FAISS densa (semántica) | Conocimiento estructurado, responde preguntas generales |
+| `multiclinsum_*` | BM25 léxico (exacto) | Solo aparece si hay coincidencia real de términos clínicos |
+
+Si no hay coincidencia léxica en Multiclinsum, esos fragmentos no se incluyen — evitando que casos raros de pacientes contaminen la respuesta.
+
+## Preguntas de clarificación
+
+Cuando la query es corta y le falta contexto clínico (semana de gestación, síntoma específico, si está en lactancia), el sistema pide esa información antes de recuperar fragmentos:
+
+- `"me duele la cabeza"` → *"¿Cuántas semanas de embarazo estás actualmente?"*
+- `"puedo tomar algo"` → *"¿Para qué síntoma y en qué semana de gestación estás?"*
+- `"me siento triste"` → *"¿Cuánto tiempo llevas así y estás embarazada o en postparto?"*
+
+**Nunca** se pide clarificación para `signos_de_alarma` ni cuando el riesgo es medium/high — en esos casos siempre se responde de inmediato.
 
 ## Skill System
 
@@ -108,6 +137,21 @@ src/skills/mi_skill/
 
 Registrar en `ToolRegistry` y ejecutar desde `chain.py` vía `ToolRegistry.execute("tool_name", ...)`.
 
+## Estructura
+
+```
+src/
+├── ingestion/      # formatters, chunkers, embedder, FAISS store, scripts de ingestión
+├── classifiers/    # intent_classifier.py, risk_detector.py
+├── rag/            # retriever.py, bm25_index.py, chain.py
+├── api/            # main.py (FastAPI), schemas.py
+├── ui/             # app.py (Streamlit)
+├── bot/            # maternas_bot.py (Telegram)
+├── skills/         # notifier/ (email SMTP), base ToolRegistry
+└── settings.py
+foragents/          # plan técnico y Q&A del proyecto (Q1–Q21)
+```
+
 ## Siguientes mejoras
-- **Integración con telegram** → Chatbot especializado en telegram.
-- **Fine-tunning con QLORA**
+- **Web search skill** → fallback Tavily cuando el vector store no tiene la info
+- **Fine-tuning con QLoRA** → mejorar respuestas en español

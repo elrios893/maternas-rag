@@ -48,6 +48,16 @@ st.markdown("""
     max-width: 80%;
     color: #1a1a2e;
 }
+/* Burbuja clarificación */
+.msg-clarification {
+    background: #fff8e6;
+    border: 1px solid #ffc107;
+    border-radius: 16px 16px 16px 4px;
+    padding: 12px 16px;
+    margin: 6px 0;
+    max-width: 80%;
+    color: #1a1a2e;
+}
 /* Badge de riesgo */
 .badge-low    { background:#d4edda; color:#155724; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
 .badge-medium { background:#fff3cd; color:#856404; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
@@ -208,6 +218,11 @@ for msg in st.session_state.messages:
             f'<div class="msg-user">👤 {msg["content"]}</div>',
             unsafe_allow_html=True,
         )
+    elif msg.get("clarification"):
+        st.markdown(
+            f'<div class="msg-clarification">🤰 💬 {msg["content"]}</div>',
+            unsafe_allow_html=True,
+        )
     else:
         st.markdown(
             f'<div class="msg-assistant">🤰 {msg["content"]}</div>',
@@ -246,13 +261,21 @@ else:
 
         if result:
             answer = result.get("answer", "Sin respuesta")
+            needs_clarification = result.get("needs_clarification", False)
 
             # Alerta visual para riesgo alto
             if result.get("risk_level") == "high":
                 st.error("⚠️ Se detectaron señales de alarma. Busca atención médica de inmediato.")
 
-            # Agregar respuesta al historial
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+            # Mostrar respuesta con estilo según tipo
+            if needs_clarification:
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer,
+                    "clarification": True,
+                })
+            else:
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
             # Guardar metadata del turno
             st.session_state.meta.append(result)
