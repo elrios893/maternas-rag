@@ -808,4 +808,88 @@ Cada intent define:
 
 ---
 
+## Q22: ¿Cómo se evalúa la calidad del sistema RAG con MaternaQA-es?
+
+**Respuesta:**
+
+Implementado el 3 de julio de 2026. El pipeline de evaluación usa el compendio QA **MaternaQA-es** (`JhonHander/MaternaQA-es`) como benchmark y Ragas como motor de métricas.
+
+### ¿Qué es MaternaQA-es?
+
+Dataset público en español de **5.727 pares pregunta-respuesta** derivados de 63 PDFs clínicos (GPC de atención prenatal, revistas de obstetricia colombianas, protocolos). Construido por el mismo equipo del proyecto Minciencias. Cada par tiene:
+- `pregunta` / `respuesta` / `contexto_fuente`
+- `tipo`: factual | definicion | comparacion | razonamiento | aplicacion | hipotetico
+- `dificultad`: basico | intermedio | avanzado
+- Split train/validation/test sin fuga de datos (división a nivel de documento)
+
+### Flujo del pipeline (dos fases separadas)
+
+La separación en fases es necesaria para evitar conflictos CUDA/CPU entre el embedding del proyecto (GPU) y los embeddings de Ragas (CPU).
+
+```
+FASE 1 (--generate-only):
+  muestra estratificada de test.jsonl
+       ↓
+  chat(pregunta) → respuesta generada + fragmentos recuperados
+       ↓
+  evaluation_reports/eval_raw_<ts>.json
+
+FASE 2 (--evaluate-only <raw.json>):
+  Ragas evaluate() con LLM judge (Groq) + embeddings CPU
+  métricas: faithfulness, answer_relevancy, context_recall
+       ↓
+  evaluation_reports/eval_results_<ts>.json
+  evaluation_reports/eval_report_<ts>.md
+```
+
+### Muestra estratificada (~50 pares)
+
+| Tipo | N |
+|---|---|
+| factual | 15 |
+| definicion | 10 |
+| razonamiento | 10 |
+| aplicacion | 10 |
+| comparacion | 3 |
+| hipotetico | 2 |
+
+### Métricas usadas
+
+| Métrica | Qué mide | Notas |
+|---|---|---|
+| `faithfulness` | ¿La respuesta está respaldada por los fragmentos recuperados? | Alto = el LLM no inventa datos |
+| `answer_relevancy` | ¿La respuesta responde la pregunta formulada? | Alto = respuesta pertinente |
+| `context_recall` | ¿El retrieval capturó información relevante del ground truth? | Bajo es esperable: el corpus actual no tiene los PDFs de MaternaQA-es |
+
+### Uso
+
+```bash
+# Evaluación completa (~50 pares, ambas fases)
+python src/evaluation/eval_pipeline.py
+
+# Solo generar respuestas (fase 1)
+python src/evaluation/eval_pipeline.py --generate-only
+
+# Solo evaluar un raw ya generado (fase 2)
+python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_XXX.json
+
+# Muestra reducida para prueba rápida
+python src/evaluation/eval_pipeline.py --sample 10
+```
+
+### Referencia de línea base (MaternaQA-es propio)
+
+| Split | Faithfulness | Answer Relevancy |
+|---|---|---|
+| Train | 0.7726 | 0.6466 |
+| Test | 0.7132 | 0.5583 |
+
+### Archivos
+
+- `src/evaluation/sampler.py` — descarga y muestrea estratificadamente `test.jsonl` desde GitHub raw
+- `src/evaluation/eval_pipeline.py` — pipeline completo: fase 1 (generación), fase 2 (Ragas)
+- `evaluation_reports/` — reportes JSON y Markdown generados (ignorado por git, muy pesados)
+
+---
+
 *Última actualización: 3 de julio de 2026*

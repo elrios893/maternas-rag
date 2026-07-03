@@ -35,6 +35,9 @@ python-telegram-bot==21.10
 # --- Search ---
 rank-bm25==0.2.2
 
+# --- Evaluation ---
+ragas==0.2.12
+
 # --- UI ---
 streamlit==1.41.1
 
