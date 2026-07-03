@@ -32,6 +32,9 @@ tokenizers==0.22.2
 # --- Bot ---
 python-telegram-bot==21.10
 
+# --- Search ---
+rank-bm25==0.2.2
+
 # --- UI ---
 streamlit==1.41.1
 

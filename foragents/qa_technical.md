@@ -668,4 +668,65 @@ python src/bot/maternas_bot.py
 
 ---
 
-*Última actualización: 3 de junio de 2026*
+## Q20: ¿Por qué se implementó búsqueda híbrida y cómo funciona?
+
+**Respuesta:**
+
+Implementado el 3 de julio de 2026 tras diagnóstico de calidad del retrieval.
+
+### El problema original
+
+Con búsqueda densa pura (FAISS sobre todos los vectores), Multiclinsum dominaba los resultados para preguntas generales. Multiclinsum tiene 51,804 vectores de casos clínicos individuales — son útiles para términos médicos específicos, pero inútiles para preguntas como "¿qué alimentos evitar en el embarazo?". Los scores FAISS son engañosamente altos (~0.84) porque los embeddings densos siempre están cerca en el espacio vectorial, independientemente de la relevancia real.
+
+Ejemplo del problema:
+```
+Q: "Que alimentos debo evitar durante el embarazo?"
+Antes: Score 0.84 → caso clínico de mujer post-gastrectomía (irrelevante)
+       Score 0.83 → caso de melioidosis en embarazo (irrelevante)
+```
+
+### La solución: búsqueda híbrida por tipo de fuente
+
+```
+query
+  │
+  ├─► FAISS densa (solo textbook + medmcqa + medqa_*)
+  │   - Semántica: captura sinónimos y paráfrasis
+  │   - top-5 fragmentos
+  │
+  └─► BM25 léxico (solo multiclinsum_summary + multiclinsum_fulltext)
+      - Exacta: solo retorna si hay coincidencia real de términos
+      - top-2 fragmentos, solo si BM25 score >= 0.5
+      - Si no hay match léxico → Multiclinsum no aparece
+```
+
+### Módulos involucrados
+
+- **`src/rag/bm25_index.py`** — singleton BM25 sobre Multiclinsum. Se construye en memoria al primer uso (~15-20s, ~150MB RAM). Usa `rank_bm25` con tokenizador multilingüe (ES/EN) y eliminación de stopwords.
+- **`src/rag/retriever.py`** — orquesta ambas búsquedas y mergea resultados. El FAISS pide `k×10` candidatos para filtrar Multiclinsum con suficiente margen.
+
+### Por qué BM25 para Multiclinsum específicamente
+
+Los casos clínicos de Multiclinsum son valiosos cuando el usuario pregunta algo específico que aparece literalmente en los casos (preeclampsia, eclampsia, placenta previa, hemorragia). En esos casos, la coincidencia léxica exacta es más fiable que la similitud semántica. Para preguntas generales sin términos médicos exactos, BM25 simplemente no retorna nada — que es el comportamiento correcto.
+
+### Resultado post-mejora
+
+```
+Q: "Que alimentos debo evitar durante el embarazo?"
+Después: 5 densos (medmcqa + textbook) + 2 BM25 con match léxico
+→ Respuesta con lista concreta: mercurio, no pasteurizados, etc.
+
+Q: "Es seguro hacer ejercicio durante el embarazo?"
+Después: 5 fragmentos de textbook → Respuesta con cita [1] del ACOG
+```
+
+### Mejora del prompt (simultánea)
+
+Se reforzó el system prompt con reglas explícitas de citación:
+- Solo citar [n] si el fragmento literalmente respalda la afirmación
+- Si los fragmentos son adyacentes pero no exactos, usarlos de apoyo y complementar con conocimiento general sin aclarar innecesariamente "no tengo fuentes"
+- Tono más conciso, cálido y directo — sin introducciones largas ni despedidas genéricas
+
+---
+
+*Última actualización: 3 de julio de 2026*

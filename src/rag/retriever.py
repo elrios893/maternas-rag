@@ -1,17 +1,19 @@
 """
-retriever.py — Capa de recuperación RAG sobre el índice FAISS.
+retriever.py — Capa de recuperación RAG híbrida.
 
-Responsabilidades:
-  - Cargar el FAISSStore como singleton (una sola vez por proceso)
-  - Ejecutar búsqueda top-k con el prefijo E5 correcto ("query: ...")
-  - Filtrar y formatear los resultados para el LLM
-  - Exponer retrieve() como función pública simple
+Estrategia:
+  - Búsqueda DENSA (FAISS): sobre textbook, medmcqa, medqa_*
+    Semántica — captura sinónimos y paráfrasis.
+  - Búsqueda LÉXICA (BM25): sobre multiclinsum_summary y multiclinsum_fulltext
+    Exacta — solo retorna casos clínicos si hay coincidencia real de términos.
+    Evita que casos irrelevantes contaminen el contexto del LLM.
+
+Resultado final: top-5 densa + top-2 BM25 (solo si score >= umbral).
+Los fragmentos se numeran en orden: primero los densos, luego los BM25.
 
 Uso:
     from src.rag.retriever import retrieve
-    docs = retrieve("¿Qué síntomas indican preeclampsia?", k=5)
-    for d in docs:
-        print(d["score"], d["source_dataset"], d["text"][:80])
+    docs = retrieve("síntomas de preeclampsia", k=5)
 """
 
 from __future__ import annotations
@@ -28,8 +30,12 @@ from src.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Fuentes que usa la búsqueda densa (excluye Multiclinsum)
+DENSE_SOURCES = {"textbook", "medmcqa", "medqa_us", "medqa_taiwan", "medqa_mainland"}
+MULTICLINSUM_SOURCES = {"multiclinsum_summary", "multiclinsum_fulltext"}
+
 # ---------------------------------------------------------------------------
-# Singleton del índice FAISS
+# Singleton FAISS
 # ---------------------------------------------------------------------------
 
 _store: FAISSStore | None = None
@@ -45,7 +51,7 @@ def _get_store() -> FAISSStore:
 
 
 # ---------------------------------------------------------------------------
-# Etiquetas legibles para cada tipo de fuente
+# Etiquetas legibles por dataset
 # ---------------------------------------------------------------------------
 
 SOURCE_LABELS = {
@@ -60,8 +66,54 @@ SOURCE_LABELS = {
 
 
 def source_label(source_dataset: str) -> str:
-    """Devuelve una etiqueta legible para humanos según el dataset de origen."""
     return SOURCE_LABELS.get(source_dataset, f"Fuente: {source_dataset}")
+
+
+# ---------------------------------------------------------------------------
+# Búsqueda densa — FAISS solo sobre fuentes no-Multiclinsum
+# ---------------------------------------------------------------------------
+
+def _retrieve_dense(query: str, k: int) -> list[dict[str, Any]]:
+    """
+    Recupera los k fragmentos más relevantes usando FAISS.
+    Filtra en post-proceso para excluir Multiclinsum.
+    Pide k*4 a FAISS para tener margen de filtrado.
+    """
+    store = _get_store()
+    # Pedimos bastante más para poder filtrar Multiclinsum y quedarnos con k.
+    # Multiclinsum ocupa ~14% del índice; con k*10 hay margen suficiente
+    # incluso en consultas donde Multiclinsum domina las primeras posiciones.
+    candidates = store.search(query, k=k * 10)
+
+    results = []
+    for doc in candidates:
+        src = doc.get("source_dataset", "")
+        if src in DENSE_SOURCES:
+            results.append({**doc, "retrieval": "dense"})
+            if len(results) >= k:
+                break
+
+    logger.info(f"[Retriever:dense] {len(results)}/{k} fragmentos (fuentes: textbook/medqa/medmcqa)")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Búsqueda léxica — BM25 solo sobre Multiclinsum
+# ---------------------------------------------------------------------------
+
+def _retrieve_bm25(query: str, k: int) -> list[dict[str, Any]]:
+    """
+    Busca en Multiclinsum usando BM25.
+    Solo retorna fragmentos con coincidencia léxica real.
+    """
+    try:
+        from src.rag.bm25_index import search_bm25
+        results = search_bm25(query, k=k, min_score=0.5)
+        logger.info(f"[Retriever:bm25] {len(results)} fragmentos de Multiclinsum con match léxico")
+        return results
+    except Exception as e:
+        logger.warning(f"[Retriever:bm25] Error en búsqueda BM25: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -71,29 +123,19 @@ def source_label(source_dataset: str) -> str:
 def retrieve(
     query: str,
     k: int | None = None,
-    min_score: float = 0.0,
+    k_bm25: int = 2,
 ) -> list[dict[str, Any]]:
     """
-    Recupera los fragmentos más relevantes del índice FAISS para la query.
-
-    El prefijo "query: " se aplica internamente en embed_query() —
-    no hace falta incluirlo en el argumento query.
+    Recupera fragmentos relevantes usando búsqueda híbrida.
 
     Args:
-        query:     Pregunta o texto del usuario.
-        k:         Número de fragmentos a recuperar (default: settings.rag_top_k).
-        min_score: Score mínimo de similitud coseno para incluir un resultado.
-                   0.0 = no filtrar (todos los resultados).
+        query:  Pregunta del usuario.
+        k:      Fragmentos densos a recuperar (default: settings.rag_top_k = 5).
+        k_bm25: Fragmentos BM25 de Multiclinsum (default: 2, solo si hay match).
 
     Returns:
-        Lista de dicts ordenada por score descendente, cada uno con:
-            text           — texto del fragmento
-            score          — similitud coseno (0.0 – 1.0)
-            source_dataset — "medmcqa" | "medqa_us" | "multiclinsum_summary" | etc.
-            language       — "en" | "es" | "zh-hans" | "zh-hant"
-            doc_id         — identificador del documento original
-            chunk_id       — identificador único del chunk
-            + resto de metadata del formatter original
+        Lista combinada: primero fragmentos densos, luego BM25 si los hay.
+        Máximo k + k_bm25 fragmentos.
     """
     if not query or not query.strip():
         return []
@@ -101,21 +143,26 @@ def retrieve(
     if k is None:
         k = settings.rag_top_k
 
-    store   = _get_store()
-    results = store.search(query, k=k)
+    dense_results = _retrieve_dense(query, k=k)
+    bm25_results  = _retrieve_bm25(query, k=k_bm25)
 
-    if min_score > 0.0:
-        results = [r for r in results if r.get("score", 0.0) >= min_score]
+    # Merge: densos primero, BM25 al final (máx k+k_bm25 total)
+    combined = dense_results + bm25_results
+    logger.info(
+        f"[Retriever] Total: {len(dense_results)} densos + "
+        f"{len(bm25_results)} BM25 = {len(combined)} fragmentos"
+    )
+    return combined
 
-    return results
 
+# ---------------------------------------------------------------------------
+# Formateo del contexto para el LLM
+# ---------------------------------------------------------------------------
 
 def format_context(docs: list[dict[str, Any]], max_chars: int = 4000) -> str:
     """
-    Convierte la lista de docs recuperados en un bloque de contexto
-    listo para incluir en el prompt del LLM.
-
-    Cada fragmento numerado. El LLM puede citar [n] inline.
+    Convierte la lista de docs en bloque de contexto para el prompt.
+    Cada fragmento va numerado — el LLM puede citar [n] inline.
     """
     if not docs:
         return "No se encontraron fragmentos relevantes en la base de conocimiento."
@@ -125,7 +172,9 @@ def format_context(docs: list[dict[str, Any]], max_chars: int = 4000) -> str:
 
     for i, doc in enumerate(docs, 1):
         text = doc.get("text", "").strip()
-        fragment = f"--- Fragmento [{i}] ---\n{text}"
+        retrieval_type = doc.get("retrieval", "dense")
+        tag = " [caso clínico]" if retrieval_type == "bm25" else ""
+        fragment = f"--- Fragmento [{i}]{tag} ---\n{text}"
 
         if total_chars + len(fragment) > max_chars:
             remaining = max_chars - total_chars
