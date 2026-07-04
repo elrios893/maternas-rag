@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
+    # --- Maternas API ---
+    api_url: str = Field("http://localhost:8080", env="API_URL")
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
