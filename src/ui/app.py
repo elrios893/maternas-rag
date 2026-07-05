@@ -10,6 +10,7 @@ import httpx
 
 from src.ui.client import check_health
 from src.ui.views.chat_view import render_chat
+from src.ui.views.dashboard_view import render_dashboard
 
 # ---------------------------------------------------------------------------
 # Config
@@ -78,50 +79,6 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "chat"
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def risk_badge(level: str) -> str:
-    labels = {"low": "🟢 Bajo", "medium": "🟡 Medio", "high": "🔴 ALTO"}
-    css    = {"low": "badge-low", "medium": "badge-medium", "high": "badge-high"}
-    label  = labels.get(level, level)
-    klass  = css.get(level, "badge-low")
-    return f'<span class="{klass}">{label}</span>'
-
-
-def intent_label(intent: str) -> str:
-    labels = {
-        "control_prenatal":       "📅 Control prenatal",
-        "signos_de_alarma":       "🚨 Signos de alarma",
-        "sintomas_embarazo":      "🤰 Síntomas embarazo",
-        "postparto":              "👶 Postparto",
-        "lactancia":              "🍼 Lactancia",
-        "salud_mental_perinatal": "💙 Salud mental",
-        "medicamentos":           "💊 Medicamentos",
-        "nutricion":              "🥗 Nutrición",
-        "actividad_fisica":       "🏃 Actividad física",
-        "planificacion_familiar": "📋 Planificación familiar",
-        "consulta_administrativa":"📂 Administrativa",
-        "pregunta_fuera_de_alcance": "❓ Fuera de alcance",
-    }
-    return labels.get(intent, intent)
-
-
-def source_dataset_label(ds: str) -> str:
-    labels = {
-        "medmcqa":               "MedMCQA",
-        "medqa_us":              "MedQA-US",
-        "medqa_taiwan":          "MedQA-TW",
-        "medqa_mainland":        "MedQA-ML",
-        "multiclinsum_summary":  "Caso clínico (resumen)",
-        "multiclinsum_fulltext": "Caso clínico (texto)",
-        "textbook":              "Textbook médico",
-    }
-    return labels.get(ds, ds)
-
-
-# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
@@ -146,60 +103,18 @@ with st.sidebar:
         health = {}
         api_ok = False
 
+    st.session_state.health = health
+    st.session_state.api_ok = api_ok
+
     if api_ok:
         st.success(f"API conectada")
-        st.caption(f"📚 {health['total_vectors']:,} fragmentos médicos indexados")
-        st.caption(f"🧠 {health['model'].split('/')[-1]}")
-        st.session_state.api_ok = True
     else:
         st.error("API no disponible")
         st.caption("Arranca el servidor con:\n```\npython -m uvicorn src.api.main:app --port 8080\n```")
-        st.session_state.api_ok = False
-
-    st.divider()
-
-    # Metadata del último turno
-    if st.session_state.meta:
-        m = st.session_state.meta[-1]
-        st.subheader("Último turno")
-
-        st.markdown(f"**Intención:** {intent_label(m.get('intent',''))}", unsafe_allow_html=True)
-        st.markdown(f"**Riesgo:** {risk_badge(m.get('risk_level','low'))}", unsafe_allow_html=True)
-        st.markdown(f"**Acción:** `{m.get('action','')}`")
-
-        if m.get("risk_flags"):
-            st.markdown("**Señales:**")
-            for flag in m["risk_flags"]:
-                st.markdown(f"- `{flag}`")
-
-        if m.get("sources"):
-            st.markdown("**Fuentes recuperadas:**")
-            for s in m["sources"]:
-                label = source_dataset_label(s.get("source_dataset",""))
-                score = s.get("score", 0)
-                st.markdown(
-                    f'<span class="source-pill">{label} · {score:.3f}</span>',
-                    unsafe_allow_html=True,
-                )
-
-        if m.get("tokens_used"):
-            st.caption(f"Tokens usados: {m['tokens_used']:,}")
-
-    st.divider()
-
-    if st.button("🗑️ Limpiar conversación", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.meta     = []
-        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Funciones de renderizado de vistas
 # ---------------------------------------------------------------------------
-
-
-def _render_dashboard_placeholder() -> None:
-    st.title("🏠 Dashboard")
-    st.write("Contenido del Dashboard (placeholder)")
 
 
 def _render_metrics_placeholder() -> None:
@@ -216,7 +131,6 @@ def _render_settings_placeholder() -> None:
     st.title("⚙ Configuración")
     st.write("Contenido de Configuración (placeholder)")
 
-
 # ---------------------------------------------------------------------------
 # Dispatcher de vistas
 # ---------------------------------------------------------------------------
@@ -224,7 +138,7 @@ def _render_settings_placeholder() -> None:
 if st.session_state.current_page == "chat":
     render_chat()
 elif st.session_state.current_page == "dashboard":
-    _render_dashboard_placeholder()
+    render_dashboard()
 elif st.session_state.current_page == "metrics":
     _render_metrics_placeholder()
 elif st.session_state.current_page == "documents":

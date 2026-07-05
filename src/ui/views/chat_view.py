@@ -1,4 +1,4 @@
-﻿"""
+"""
 chat_view.py — Vista del chat Maternas.
 
 Solo contiene lógica de renderizado Streamlit.
@@ -9,9 +9,47 @@ import streamlit as st
 import httpx
 
 from src.ui.client import call_chat
+from src.ui.helpers import intent_label, risk_badge, source_dataset_label
 
 
 def render_chat() -> None:
+    with st.sidebar:
+        if st.session_state.messages:
+            if st.session_state.meta:
+                st.divider()
+
+                m = st.session_state.meta[-1]
+                st.subheader("Último turno")
+
+                st.markdown(f"**Intención:** {intent_label(m.get('intent',''))}", unsafe_allow_html=True)
+                st.markdown(f"**Riesgo:** {risk_badge(m.get('risk_level','low'))}", unsafe_allow_html=True)
+                st.markdown(f"**Acción:** {m.get('action','')}")
+
+                if m.get("risk_flags"):
+                    st.markdown("**Señales:**")
+                    for flag in m["risk_flags"]:
+                        st.markdown(f"- {flag}")
+
+                if m.get("sources"):
+                    st.markdown("**Fuentes recuperadas:**")
+                    for s in m["sources"]:
+                        label = source_dataset_label(s.get("source_dataset",""))
+                        score = s.get("score", 0)
+                        st.markdown(
+                            f'<span class="source-pill">{label} · {score:.3f}</span>',
+                            unsafe_allow_html=True,
+                        )
+
+                if m.get("tokens_used"):
+                    st.caption(f"Tokens usados: {m['tokens_used']:,}")
+
+            st.divider()
+
+            if st.button("🗑️ Limpiar conversación", use_container_width=True):
+                st.session_state.messages = []
+                st.session_state.meta     = []
+                st.rerun()
+
     st.title("Maternas — Asistente de Salud Materna")
     st.caption("Respondo preguntas sobre embarazo, parto, postparto y lactancia basándome en literatura médica.")
 
