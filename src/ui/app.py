@@ -8,14 +8,12 @@ Arranca con: streamlit run src/ui/app.py
 import streamlit as st
 import httpx
 
-from src.settings import settings
+from src.ui.client import check_health
+from src.ui.views.chat_view import render_chat
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-
-API_URL     = settings.api_url
-API_TIMEOUT = 60
 
 PAGE_LABELS = {
     "dashboard": "🏠 Dashboard",
@@ -83,31 +81,6 @@ if "current_page" not in st.session_state:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def check_health() -> dict | None:
-    try:
-        r = httpx.get(f"{API_URL}/health", timeout=5)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return None
-
-
-def call_chat(message: str, history: list) -> dict | None:
-    payload = {"message": message, "history": history, "k": 5}
-    try:
-        r = httpx.post(f"{API_URL}/chat", json=payload, timeout=API_TIMEOUT)
-        if r.status_code == 200:
-            return r.json()
-        st.error(f"API error {r.status_code}: {r.text[:200]}")
-    except httpx.ConnectError:
-        st.error("No se puede conectar con la API. ¿Está corriendo en el puerto 8080?")
-    except httpx.TimeoutException:
-        st.error("La API tardó demasiado. Intenta de nuevo.")
-    except Exception as e:
-        st.error(f"Error inesperado: {e}")
-    return None
-
 
 def risk_badge(level: str) -> str:
     labels = {"low": "🟢 Bajo", "medium": "🟡 Medio", "high": "🔴 ALTO"}
@@ -166,8 +139,14 @@ with st.sidebar:
     st.divider()
 
     # Estado de la API
-    health = check_health()
-    if health and health.get("faiss_loaded"):
+    try:
+        health = check_health()
+        api_ok = bool(health.get("faiss_loaded"))
+    except httpx.HTTPError:
+        health = {}
+        api_ok = False
+
+    if api_ok:
         st.success(f"API conectada")
         st.caption(f"📚 {health['total_vectors']:,} fragmentos médicos indexados")
         st.caption(f"🧠 {health['model'].split('/')[-1]}")
@@ -217,62 +196,6 @@ with st.sidebar:
 # Funciones de renderizado de vistas
 # ---------------------------------------------------------------------------
 
-def _render_chat() -> None:
-    """Vista principal del chat."""
-    # TODO(A.2.1.5): Extraer este bloque a src/ui/views/chat_view.py
-
-    st.title("Maternas — Asistente de Salud Materna")
-    st.caption("Respondo preguntas sobre embarazo, parto, postparto y lactancia basándome en literatura médica.")
-
-    # Mostrar historial
-    for msg in st.session_state.messages:
-        if msg["role"] == "user":
-            st.markdown(
-                f'<div class="msg-user">👤 {msg["content"]}</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f'<div class="msg-assistant">🤰 {msg["content"]}</div>',
-                unsafe_allow_html=True,
-            )
-
-    # Input del usuario
-    if not st.session_state.api_ok:
-        st.warning("La API no está disponible. Inicia el servidor para continuar.")
-    else:
-        with st.form("chat_form", clear_on_submit=True):
-            col1, col2 = st.columns([8, 1])
-            with col1:
-                user_input = st.text_input(
-                    "Tu mensaje",
-                    placeholder="Ej: ¿Es normal tener náuseas a las 10 semanas?",
-                    label_visibility="collapsed",
-                )
-            with col2:
-                submitted = st.form_submit_button("Enviar", use_container_width=True)
-
-        if submitted and user_input.strip():
-            st.session_state.messages.append({"role": "user", "content": user_input.strip()})
-
-            with st.spinner("Consultando base de conocimiento médico..."):
-                history_payload = [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages[:-1]
-                ]
-                result = call_chat(user_input.strip(), history_payload)
-
-            if result:
-                answer = result.get("answer", "Sin respuesta")
-
-                if result.get("risk_level") == "high":
-                    st.error("⚠️ Se detectaron señales de alarma. Busca atención médica de inmediato.")
-
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                st.session_state.meta.append(result)
-
-                st.rerun()
-
 
 def _render_dashboard_placeholder() -> None:
     st.title("🏠 Dashboard")
@@ -299,7 +222,7 @@ def _render_settings_placeholder() -> None:
 # ---------------------------------------------------------------------------
 
 if st.session_state.current_page == "chat":
-    _render_chat()
+    render_chat()
 elif st.session_state.current_page == "dashboard":
     _render_dashboard_placeholder()
 elif st.session_state.current_page == "metrics":
