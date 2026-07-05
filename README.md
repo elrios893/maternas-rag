@@ -10,7 +10,7 @@ Chatbot conversacional basado en arquitectura RAG orientado a madres gestantes. 
 
 | Capa | Tecnología |
 |---|---|
-| Embedding | `intfloat/multilingual-e5-base` (768 dims, ES/EN/ZH) en CUDA |
+| Embedding | `intfloat/multilingual-e5-base` (768 dims, ES/EN/ZH) en CPU por defecto |
 | Vector store | FAISS `IndexFlatIP` — 375,392 vectores |
 | LLM | `llama-3.3-70b-versatile` vía Groq API |
 | API | FastAPI + uvicorn |
@@ -42,14 +42,16 @@ foragents/          # plan técnico y Q&A del proyecto
 # 1. Entorno
 python -m venv venv
 .\venv\Scripts\activate       # Windows
-pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
-pip install sentence-transformers==2.7.0
 pip install -r requirements.txt
 
 # 2. Configuración
 cp .env.example .env          # completar GROQ_API_KEY y rutas de datasets
 
-# 3. Ingestión (una sola vez, ~5h en GPU)
+# 2.1. Si no tienes GPU NVIDIA, deja EMBEDDING_DEVICE=cpu
+
+# 2.2. Si sí tienes GPU NVIDIA, puedes cambiar EMBEDDING_DEVICE=cuda
+
+# 3. Ingestión (una sola vez; en CPU tarda bastante más)
 python src/ingestion/run_ingestion.py
 
 # 4. Arrancar

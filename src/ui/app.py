@@ -7,14 +7,23 @@ Arranca con: streamlit run src/ui/app.py
 
 import streamlit as st
 import httpx
-import json
+
+from src.settings import settings
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-API_URL     = "http://localhost:8080"
+API_URL     = settings.api_url
 API_TIMEOUT = 60
+
+PAGE_LABELS = {
+    "dashboard": "🏠 Dashboard",
+    "chat":      "💬 Chat",
+    "metrics":   "📊 Métricas",
+    "documents": "📁 Documentos",
+    "settings":  "⚙ Configuración",
+}
 
 st.set_page_config(
     page_title="Maternas — Asistente de Salud",
@@ -67,6 +76,8 @@ if "meta" not in st.session_state:
     st.session_state.meta = []            # metadata del último turno
 if "api_ok" not in st.session_state:
     st.session_state.api_ok = None
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "chat"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -144,6 +155,14 @@ def source_dataset_label(ds: str) -> str:
 with st.sidebar:
     st.title("🤰 Maternas")
     st.caption("Asistente de salud para madres gestantes")
+
+    st.radio(
+        "Navegación",
+        options=list(PAGE_LABELS.keys()),
+        format_func=lambda key: PAGE_LABELS[key],
+        key="current_page",
+        label_visibility="collapsed",
+    )
     st.divider()
 
     # Estado de la API
@@ -195,66 +214,97 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------------------------
-# Área principal — historial de chat
+# Funciones de renderizado de vistas
 # ---------------------------------------------------------------------------
 
-st.title("Maternas — Asistente de Salud Materna")
-st.caption("Respondo preguntas sobre embarazo, parto, postparto y lactancia basándome en literatura médica.")
+def _render_chat() -> None:
+    """Vista principal del chat."""
+    # TODO(A.2.1.5): Extraer este bloque a src/ui/views/chat_view.py
 
-# Mostrar historial
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.markdown(
-            f'<div class="msg-user">👤 {msg["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f'<div class="msg-assistant">🤰 {msg["content"]}</div>',
-            unsafe_allow_html=True,
-        )
+    st.title("Maternas — Asistente de Salud Materna")
+    st.caption("Respondo preguntas sobre embarazo, parto, postparto y lactancia basándome en literatura médica.")
 
-# ---------------------------------------------------------------------------
-# Input del usuario
-# ---------------------------------------------------------------------------
-
-if not st.session_state.api_ok:
-    st.warning("La API no está disponible. Inicia el servidor para continuar.")
-else:
-    with st.form("chat_form", clear_on_submit=True):
-        col1, col2 = st.columns([8, 1])
-        with col1:
-            user_input = st.text_input(
-                "Tu mensaje",
-                placeholder="Ej: ¿Es normal tener náuseas a las 10 semanas?",
-                label_visibility="collapsed",
+    # Mostrar historial
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            st.markdown(
+                f'<div class="msg-user">👤 {msg["content"]}</div>',
+                unsafe_allow_html=True,
             )
-        with col2:
-            submitted = st.form_submit_button("Enviar", use_container_width=True)
+        else:
+            st.markdown(
+                f'<div class="msg-assistant">🤰 {msg["content"]}</div>',
+                unsafe_allow_html=True,
+            )
 
-    if submitted and user_input.strip():
-        # Agregar mensaje del usuario al historial visual
-        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
+    # Input del usuario
+    if not st.session_state.api_ok:
+        st.warning("La API no está disponible. Inicia el servidor para continuar.")
+    else:
+        with st.form("chat_form", clear_on_submit=True):
+            col1, col2 = st.columns([8, 1])
+            with col1:
+                user_input = st.text_input(
+                    "Tu mensaje",
+                    placeholder="Ej: ¿Es normal tener náuseas a las 10 semanas?",
+                    label_visibility="collapsed",
+                )
+            with col2:
+                submitted = st.form_submit_button("Enviar", use_container_width=True)
 
-        # Llamar a la API
-        with st.spinner("Consultando base de conocimiento médico..."):
-            history_payload = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages[:-1]   # sin el mensaje actual
-            ]
-            result = call_chat(user_input.strip(), history_payload)
+        if submitted and user_input.strip():
+            st.session_state.messages.append({"role": "user", "content": user_input.strip()})
 
-        if result:
-            answer = result.get("answer", "Sin respuesta")
+            with st.spinner("Consultando base de conocimiento médico..."):
+                history_payload = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
+                result = call_chat(user_input.strip(), history_payload)
 
-            # Alerta visual para riesgo alto
-            if result.get("risk_level") == "high":
-                st.error("⚠️ Se detectaron señales de alarma. Busca atención médica de inmediato.")
+            if result:
+                answer = result.get("answer", "Sin respuesta")
 
-            # Agregar respuesta al historial
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+                if result.get("risk_level") == "high":
+                    st.error("⚠️ Se detectaron señales de alarma. Busca atención médica de inmediato.")
 
-            # Guardar metadata del turno
-            st.session_state.meta.append(result)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.meta.append(result)
 
-            st.rerun()
+                st.rerun()
+
+
+def _render_dashboard_placeholder() -> None:
+    st.title("🏠 Dashboard")
+    st.write("Contenido del Dashboard (placeholder)")
+
+
+def _render_metrics_placeholder() -> None:
+    st.title("📊 Métricas")
+    st.write("Contenido de Métricas (placeholder)")
+
+
+def _render_documents_placeholder() -> None:
+    st.title("📁 Administración Documental del RAG")
+    st.write("Contenido de Administración Documental (placeholder)")
+
+
+def _render_settings_placeholder() -> None:
+    st.title("⚙ Configuración")
+    st.write("Contenido de Configuración (placeholder)")
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher de vistas
+# ---------------------------------------------------------------------------
+
+if st.session_state.current_page == "chat":
+    _render_chat()
+elif st.session_state.current_page == "dashboard":
+    _render_dashboard_placeholder()
+elif st.session_state.current_page == "metrics":
+    _render_metrics_placeholder()
+elif st.session_state.current_page == "documents":
+    _render_documents_placeholder()
+elif st.session_state.current_page == "settings":
+    _render_settings_placeholder()
