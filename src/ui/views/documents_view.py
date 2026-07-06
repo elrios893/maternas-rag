@@ -21,14 +21,49 @@ def _load_document_data() -> None:
     try:
         with st.spinner("Cargando base documental..."):
             stats = get_document_stats()
-            resp = list_documents(per_page=100)
+            resp = list_documents(search="", page=1, per_page=20)
         st.session_state.doc_stats = stats
         st.session_state.documents = resp.get("documents", [])
         st.session_state.doc_total = resp.get("total", 0)
+        st.session_state.doc_page = 1
+        st.session_state.doc_search_active = ""
     except httpx.HTTPError:
         st.session_state.doc_stats = {}
         st.session_state.documents = []
         st.session_state.doc_total = 0
+        st.session_state.doc_page = 1
+
+
+def _fetch_documents(search: str = "", page: int = 1) -> None:
+    with st.spinner("Buscando documentos..."):
+        try:
+            resp = list_documents(search=search, page=page, per_page=20)
+            st.session_state.documents = resp.get("documents", [])
+            st.session_state.doc_total = resp.get("total", 0)
+            st.session_state.doc_page = page
+            st.session_state.doc_search_active = search
+        except httpx.HTTPError:
+            st.session_state.documents = []
+            st.session_state.doc_total = 0
+            st.session_state.doc_page = 1
+
+
+def _render_document_card(doc: dict) -> None:
+    doc_id = doc.get("doc_id", "—")
+    source = doc.get("source_dataset", "—")
+    chunk_count = doc.get("chunk_count", 0)
+    total_chars = doc.get("total_chars", 0)
+    size_str = f"{total_chars / 1_048_576:.1f} MB" if total_chars else "—"
+
+    with st.container(border=True):
+        st.write(f"📄 **{doc_id}**")
+        st.caption(f"{source} · {chunk_count} fragmentos · {size_str}")
+        st.caption("Estado: ✅ Indexado")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.button("Ver detalles", key=f"detail_{doc_id}", disabled=True, use_container_width=True)
+        with col2:
+            st.button("Eliminar", key=f"delete_{doc_id}", disabled=True, use_container_width=True)
 
 
 def render_documents() -> None:
@@ -68,14 +103,24 @@ def render_documents() -> None:
     st.write("")
 
     # ------------------------------------------------------------------
-    # Barra de búsqueda
+    # Barra de herramientas: búsqueda + actualizar
     # ------------------------------------------------------------------
-    st.text_input(
-        "Buscar",
-        placeholder="Buscar documento por nombre o fuente...",
-        label_visibility="collapsed",
-        key="doc_search",
-    )
+    col_search, col_btn = st.columns([4, 1])
+
+    with col_search:
+        st.text_input(
+            "Buscar",
+            placeholder="Buscar documento por nombre o fuente...",
+            label_visibility="collapsed",
+            key="doc_search",
+        )
+
+    with col_btn:
+        if st.button("🔄 Actualizar", use_container_width=True):
+            _fetch_documents(
+                search=st.session_state.get("doc_search", ""),
+                page=st.session_state.get("doc_page", 1),
+            )
 
     st.write("")
 
@@ -93,4 +138,35 @@ def render_documents() -> None:
             st.write("Aún no se ha indexado ningún documento en la base de conocimiento.")
             st.write("Ejecuta el pipeline de ingestión para comenzar.")
     else:
-        st.caption(f"{stats.get('doc_count', 0)} documento(s) en la base")
+        docs = st.session_state.get("documents", [])
+
+        if not docs:
+            with st.container(border=True):
+                st.subheader("No se encontraron documentos")
+                st.write("Prueba otro término de búsqueda.")
+        else:
+            for doc in docs:
+                _render_document_card(doc)
+
+            st.write("")
+
+            doc_page = st.session_state.get("doc_page", 1)
+            doc_total = st.session_state.get("doc_total", 0)
+            col_prev, col_cur, col_next = st.columns(3)
+
+            with col_prev:
+                if st.button("◀ Anterior", disabled=doc_page <= 1, use_container_width=True):
+                    _fetch_documents(
+                        search=st.session_state.get("doc_search", ""),
+                        page=doc_page - 1,
+                    )
+
+            with col_cur:
+                st.caption(f"Página {doc_page}")
+
+            with col_next:
+                if st.button("Siguiente ▶", disabled=doc_page * 20 >= doc_total, use_container_width=True):
+                    _fetch_documents(
+                        search=st.session_state.get("doc_search", ""),
+                        page=doc_page + 1,
+                    )
