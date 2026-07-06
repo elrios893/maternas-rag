@@ -19,10 +19,11 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.schemas import (
@@ -30,6 +31,8 @@ from src.api.schemas import (
     ChatResponse,
     ClassifyRequest,
     ClassifyResponse,
+    DocumentListResponse,
+    DocumentStatsResponse,
     HealthResponse,
     SourceDoc,
 )
@@ -79,6 +82,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Helper: agrupar chunks por documento
+# ---------------------------------------------------------------------------
+
+
+def _group_documents(store) -> dict[str, dict[str, Any]]:
+    """Agrupa todos los chunks del store por doc_id.
+
+    Retorna { doc_id: { doc_id, source_dataset, language,
+                        chunk_count, total_chars, has_chunks } }
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for entry in store.metadata.values():
+        doc_id = entry.get("doc_id", "")
+        if not doc_id:
+            continue
+        if doc_id not in groups:
+            groups[doc_id] = {
+                "doc_id":         doc_id,
+                "source_dataset": entry.get("source_dataset", ""),
+                "language":       entry.get("language", ""),
+                "chunk_count":    0,
+                "total_chars":    0,
+                "has_chunks":     entry.get("is_chunk", False),
+            }
+        groups[doc_id]["chunk_count"] += 1
+        groups[doc_id]["total_chars"] += len(entry.get("text", ""))
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -182,4 +215,65 @@ def classify(request: ClassifyRequest) -> ClassifyResponse:
         risk_flags=risk_result.flags,
         risk_reasoning=risk_result.reasoning,
         used_heuristic=risk_result.used_heuristic,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/stats
+# ---------------------------------------------------------------------------
+
+@app.get("/documents/stats", response_model=DocumentStatsResponse, tags=["documentos"])
+def documents_stats() -> DocumentStatsResponse:
+    """Estadísticas agregadas de la base documental."""
+    try:
+        store = _get_store()
+    except Exception:
+        logger.exception("Error al acceder al índice FAISS para /documents/stats")
+        raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
+
+    groups = _group_documents(store)
+
+    return DocumentStatsResponse(
+        total_vectors=store.total,
+        doc_count=len(groups),
+        total_chars=sum(g["total_chars"] for g in groups.values()),
+        faiss_loaded=True,
+        model=settings.embedding_model,
+        indexed_at=store.build_info().get("saved_at", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /documents
+# ---------------------------------------------------------------------------
+
+@app.get("/documents", response_model=DocumentListResponse, tags=["documentos"])
+def list_documents(
+    search: str = "",
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> DocumentListResponse:
+    """Lista documentos con búsqueda y paginación."""
+    try:
+        store = _get_store()
+    except Exception:
+        logger.exception("Error al acceder al índice FAISS para /documents")
+        raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
+
+    groups = _group_documents(store)
+    docs = list(groups.values())
+
+    if search:
+        q = search.lower()
+        docs = [d for d in docs if q in d["doc_id"].lower() or q in d["source_dataset"].lower()]
+
+    docs.sort(key=lambda d: d["doc_id"])
+    total = len(docs)
+    start = (page - 1) * per_page
+
+    return DocumentListResponse(
+        documents=docs[start:start + per_page],
+        total=total,
+        page=page,
+        per_page=per_page,
     )

@@ -77,3 +77,32 @@ class HealthResponse(BaseModel):
     model:         str
     total_vectors: int
     faiss_loaded:  bool
+
+
+# ---------------------------------------------------------------------------
+# GET /documents, GET /documents/stats
+# ---------------------------------------------------------------------------
+
+class DocumentSummary(BaseModel):
+    doc_id:         str
+    source_dataset: str
+    language:       str
+    chunk_count:    int
+    total_chars:    int
+    has_chunks:     bool
+
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentSummary]
+    total:     int
+    page:      int
+    per_page:  int
+
+
+class DocumentStatsResponse(BaseModel):
+    total_vectors: int
+    doc_count:     int
+    total_chars:   int
+    faiss_loaded:  bool
+    model:         str
+    indexed_at:    str

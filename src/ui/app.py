@@ -11,6 +11,7 @@ import httpx
 from src.ui.client import check_health
 from src.ui.views.chat_view import render_chat
 from src.ui.views.dashboard_view import render_dashboard
+from src.ui.views.documents_view import render_documents
 
 # ---------------------------------------------------------------------------
 # Config
@@ -122,11 +123,6 @@ def _render_metrics_placeholder() -> None:
     st.write("Contenido de Métricas (placeholder)")
 
 
-def _render_documents_placeholder() -> None:
-    st.title("📁 Administración Documental del RAG")
-    st.write("Contenido de Administración Documental (placeholder)")
-
-
 def _render_settings_placeholder() -> None:
     st.title("⚙ Configuración")
     st.write("Contenido de Configuración (placeholder)")
@@ -142,6 +138,6 @@ elif st.session_state.current_page == "dashboard":
 elif st.session_state.current_page == "metrics":
     _render_metrics_placeholder()
 elif st.session_state.current_page == "documents":
-    _render_documents_placeholder()
+    render_documents()
 elif st.session_state.current_page == "settings":
     _render_settings_placeholder()

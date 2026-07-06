@@ -1,0 +1,96 @@
+"""
+documents_view.py — Vista del Centro de Gestión Documental del RAG.
+"""
+
+import streamlit as st
+import httpx
+
+from src.ui.client import get_document_stats, list_documents
+
+
+def _render_stat_card(title: str, value: str) -> None:
+    with st.container(border=True):
+        st.caption(title)
+        st.write(value)
+
+
+def _load_document_data() -> None:
+    if st.session_state.get("doc_loaded"):
+        return
+    st.session_state.doc_loaded = True
+    try:
+        with st.spinner("Cargando base documental..."):
+            stats = get_document_stats()
+            resp = list_documents(per_page=100)
+        st.session_state.doc_stats = stats
+        st.session_state.documents = resp.get("documents", [])
+        st.session_state.doc_total = resp.get("total", 0)
+    except httpx.HTTPError:
+        st.session_state.doc_stats = {}
+        st.session_state.documents = []
+        st.session_state.doc_total = 0
+
+
+def render_documents() -> None:
+    st.title("📁 Documentos")
+    st.caption("Gestiona la base documental utilizada por el asistente RAG.")
+    st.divider()
+
+    _load_document_data()
+
+    stats = st.session_state.get("doc_stats", {})
+    api_ok = st.session_state.get("api_ok", False)
+
+    # ------------------------------------------------------------------
+    # KPIs
+    # ------------------------------------------------------------------
+    kpi_documents = str(stats.get("doc_count", "—"))
+    kpi_fragments = f"{stats.get('total_vectors', 0):,}"
+    total_chars = stats.get("total_chars", 0)
+    size_mb = total_chars / 1_048_576 if total_chars else 0
+    kpi_size = f"{size_mb:.0f} MB" if size_mb > 0 else "—"
+    kpi_status = "✅ Índice actualizado" if stats.get("faiss_loaded") else "❌ No disponible"
+
+    cols = st.columns(4)
+
+    with cols[0]:
+        _render_stat_card("📄 Documentos", kpi_documents)
+
+    with cols[1]:
+        _render_stat_card("📚 Fragmentos", kpi_fragments)
+
+    with cols[2]:
+        _render_stat_card("💾 Tamaño total", kpi_size)
+
+    with cols[3]:
+        _render_stat_card("✅ Estado", kpi_status)
+
+    st.write("")
+
+    # ------------------------------------------------------------------
+    # Barra de búsqueda
+    # ------------------------------------------------------------------
+    st.text_input(
+        "Buscar",
+        placeholder="Buscar documento por nombre o fuente...",
+        label_visibility="collapsed",
+        key="doc_search",
+    )
+
+    st.write("")
+
+    # ------------------------------------------------------------------
+    # Contenido
+    # ------------------------------------------------------------------
+    if not api_ok:
+        with st.container(border=True):
+            st.subheader("Servicio no disponible")
+            st.write("La API del backend no está disponible.")
+            st.write("Inicia el servidor y vuelve a intentarlo.")
+    elif stats.get("doc_count", 0) == 0:
+        with st.container(border=True):
+            st.subheader("No hay documentos indexados")
+            st.write("Aún no se ha indexado ningún documento en la base de conocimiento.")
+            st.write("Ejecuta el pipeline de ingestión para comenzar.")
+    else:
+        st.caption(f"{stats.get('doc_count', 0)} documento(s) en la base")
