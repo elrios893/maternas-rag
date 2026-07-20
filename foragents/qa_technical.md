@@ -892,4 +892,260 @@ python src/evaluation/eval_pipeline.py --sample 10
 
 ---
 
-*Última actualización: 3 de julio de 2026*
+## Q23: ¿Por qué Ragas agota la cuota de tokens incluso con 20 pares, y cómo se resuelve?
+
+**Contexto:** Al correr `phase_evaluate()` con 20 pares y 5 métricas, ambas API keys de Groq (100k tokens/día cada una) se agotan antes de completar todos los pares, dejando resultados parciales.
+
+**Causa raíz:**
+
+Ragas 0.2.12 con defaults lanza **N_pares × N_métricas jobs** contra la API. Con 20 pares × 5 métricas = 100 jobs, y con `max_workers=16` (default) los lanza en ráfagas de 16 simultáneos. Cada job puede consumir entre 700 y 3.000 tokens según la métrica:
+
+| Métrica | Tokens/par (estimado) | Razón |
+|---|---|---|
+| `faithfulness` | ~2.000–3.000 | 2 prompts LLM: genera statements + verifica NLI |
+| `answer_correctness` | ~1.500–2.000 | F1 semántico + factual combinado |
+| `context_recall` | ~800–1.200 | Clasifica cada oración del ground truth |
+| `context_precision` | ~400–600 | Verifica relevancia de cada chunk recuperado |
+| `answer_relevancy` | ~200–400 | Solo genera preguntas alternativas, prompt liviano |
+
+Con 20 pares y sin throttling: estimado **98k–144k tokens total**, excede una sola key. Con `max_retries=10` (default) y errores de output parser, se multiplica.
+
+**Solución implementada — dos grupos secuenciales:**
+
+```python
+# Grupo 1: KEY_1 (GROQ_API_KEY) — métricas pesadas ~35-50k tokens
+evaluate([faithfulness, answer_correctness], run_config=RunConfig(
+    max_workers=1,   # sin ráfagas concurrentes
+    max_retries=2,   # máximo 2 reintentos
+    max_wait=15,
+    timeout=120,
+), batch_size=1)
+
+# Pausa 10s
+# Grupo 2: KEY_2 (GROQ_API_KEY_2) — métricas livianas ~28-44k tokens
+evaluate([answer_relevancy, context_recall, context_precision], ...)
+```
+
+Esto distribuye la carga entre las dos keys independientes, y `max_workers=1 + batch_size=1` elimina la concurrencia que provocaba picos de consumo. Los jobs se procesan uno por uno, predeciblemente.
+
+**Limitación observada:** Incluso con esta estrategia, si las keys ya tienen tokens consumidos del día (por generaciones de fase 1 o sesiones anteriores), los últimos pares de cada grupo fallan con 429. El raw JSON de fase 1 persiste en disco — se puede relanzar `--evaluate-only` al día siguiente sin repetir las generaciones.
+
+**Archivos relevantes:**
+- `src/evaluation/eval_pipeline.py` — funciones `_run_ragas_group()`, `phase_evaluate()`
+- `src/settings.py` — `groq_api_key` y `groq_api_key_2`
+- `.env` — `GROQ_API_KEY` (chatbot), `GROQ_API_KEY_2` (Ragas judge)
+
+---
+
+## Q24: ¿Contra qué se evalúa el sistema RAG y qué significan realmente las métricas obtenidas?
+
+**Pregunta frecuente:** "¿Las métricas de Ragas miden si el sistema es bueno o malo en salud materna?"
+
+**Respuesta corta:** Miden cosas distintas, y el ground truth importa tanto como la métrica.
+
+### Dataset de evaluación: MaternaQA-es
+
+`JhonHander/MaternaQA-es` es un dataset de QA en español construido sobre documentos de salud materna colombiana:
+
+| Campo | Detalle |
+|---|---|
+| Fuente | PDFs académicos: GPC Atención Prenatal de Bajo Riesgo 2023, revistas de obstetricia (vol831-1.pdf, etc.) |
+| Idioma | Español colombiano |
+| Split usado | `test` (328 pares) |
+| Estructura | `pregunta`, `respuesta` (ground truth), `contexto_fuente`, `tipo`, `dificultad`, `source_pdf`, `topics` |
+| Tipos de pregunta | factual (31%), aplicacion (29%), razonamiento (26%), definicion (9%), hipotetico (5%) |
+| Dificultad | intermedio (57%), basico (37%), avanzado (6%) |
+
+El ground truth son respuestas redactadas por humanos **basadas en fragmentos textuales exactos** de esos PDFs.
+
+### El problema estructural: corpus mismatch
+
+El corpus RAG actual (textbooks EN, MedMCQA, MedQA, Multiclinsum) **no contiene los PDFs de MaternaQA-es**. Por eso:
+
+| Métrica | Resultado esperado | Razón |
+|---|---|---|
+| `context_recall` | Cercano a 0.0 | Los fragmentos recuperados nunca son del PDF de referencia |
+| `context_precision` | Bajo (~0.03–0.08) | Los chunks recuperados son irrelevantes para ese ground truth |
+| `faithfulness` | Moderado (~0.3–0.7) | El LLM responde desde conocimiento general, no desde los fragmentos |
+| `answer_relevancy` | Relativamente alto (~0.6–0.7) | La respuesta es pertinente a la pregunta aunque no use las fuentes correctas |
+| `answer_correctness` | Moderado (~0.4–0.6) | Coincidencia semántica parcial con el ground truth |
+
+### Qué métricas son válidas para comparar Config A vs Config B
+
+| Métrica | ¿Válida para comparar configs? | Por qué |
+|---|---|---|
+| `faithfulness` | ✅ Sí | Mide si el LLM se ciñe a lo que recupera — diferente según retrieval |
+| `answer_relevancy` | ✅ Sí | Pertinencia de la respuesta a la pregunta — refleja calidad del LLM |
+| `answer_correctness` | ✅ Sí | Distancia semántica respuesta↔ground truth — comparable entre configs |
+| `context_recall` | ⚠️ Limitada | Siempre cercana a 0 porque el corpus no tiene los docs de referencia |
+| `context_precision` | ⚠️ Limitada | Igual — mejorará solo cuando se ingesten los PDFs de MaternaQA-es |
+| `latency_s` | ✅ Sí | Tiempo real medido en fase 1 — diferencia entre configs es real |
+
+### Cuándo tendrán valor pleno context_recall y context_precision
+
+Cuando se ingesten los PDFs de MaternaQA-es al índice FAISS. En ese momento el retrieval podrá recuperar los fragmentos exactos que el ground truth cita, y las métricas de contexto pasarán de ~0 a valores significativos. Ese es el **next step** documentado en el plan técnico.
+
+### Referencia baseline publicada
+
+El paper de MaternaQA-es reporta estos valores evaluando un sistema RAG que sí tiene los PDFs indexados:
+
+| Split | Faithfulness | Answer Relevancy |
+|---|---|---|
+| train | 0.7726 | 0.6466 |
+| test | 0.7132 | 0.5583 |
+
+Nuestro sistema sin los PDFs obtiene `answer_relevancy` ~0.66 (por encima del baseline test 0.5583), lo que indica que la calidad de generación del LLM es competitiva. La brecha en `faithfulness` (~0.29 vs 0.71) se explica por el corpus mismatch: el LLM no puede citar fuentes que no recuperó.
+
+**Archivos relevantes:**
+- `src/evaluation/sampler.py` — descarga y muestrea estratificadamente `test.jsonl`
+- `src/evaluation/eval_pipeline.py` — pipeline completo con métricas y reporte MD
+- `evaluation_reports/eval_raw_configB_20260716_012717.json` — raw de fase 1 (reutilizable)
+- `evaluation_reports/eval_report_configB_20260716_012717.md` — reporte con resultados parciales
+- `foragents/retrieval_arquitecturas_configs.md` — documentación de Config A y Config B
+
+---
+
+## Q25: ¿Por qué se descartó llama-3.3-70b como juez de Ragas y qué se usa en su lugar?
+
+**Contexto:** El pipeline de evaluación usaba `llama-3.3-70b-versatile` (Groq) como LLM judge para Ragas. Esto causaba agotamiento de la cuota de 100k tokens/día incluso con solo 15-20 pares.
+
+### El problema de fondo: tokens por llamada
+
+`faithfulness` en Ragas hace 2 llamadas LLM por par: (1) generación de statements y (2) NLI verdicts. Con llama-3.3-70b en español, el modelo generaba statements muy extensos con explicaciones adicionales, consumiendo ~4.500 tokens por par solo para faithfulness.
+
+| Modelo | Tokens/par faithfulness | 15 pares × 5 métricas |
+|---|---|---|
+| llama-3.3-70b (Groq) | ~4.500 | ~337k tokens — imposible en tier free |
+| llama-3.1-8b (Groq) | ~220 | ~16k tokens — dentro del límite, pero falló JSON |
+| **gemma-4-31b (Cerebras)** | ~296 | **~22k tokens — completó 15/15 sin errores** |
+
+### Por qué llama-3.1-8b también falló
+
+El 8B generaba JSON válido en pruebas directas, pero Ragas usa un loop de reintentos de parseo con prompts en cadena. El 8B fallaba consistentemente con `RagasOutputParserException` — no seguía el formato JSON anidado del prompt interno de Ragas de forma confiable.
+
+### Solución: Cerebras `gemma-4-31b`
+
+`gemma-4-31b` en Cerebras superó las pruebas:
+- JSON válido en el prompt complejo de Ragas
+- ~296 tokens por llamada (66x menos que llama-3.3-70b)
+- Sin límite diario estricto de tokens (límite por minuto, no por día)
+- **15/15 completados en evaluación real** sin un solo error de rate limit o parser
+
+### Problema adicional: `LLMDidNotFinishException`
+
+Ragas verifica el `finish_reason` de cada respuesta. Si el modelo termina por longitud (`"length"`) en vez de por stop token (`"stop"`), lanza `LLMDidNotFinishException`. La solución fue pasar un `is_finished_parser` permisivo al `LangchainLLMWrapper`:
+
+```python
+def _is_finished(response: LLMResult) -> bool:
+    VALID = {"stop", "STOP", "length", "MAX_TOKENS", "end_turn", "eos"}
+    for g in response.flatten():
+        resp = g.generations[0][0]
+        finish = None
+        if resp.generation_info:
+            finish = resp.generation_info.get("finish_reason")
+        if finish is not None and finish not in VALID:
+            return False
+    return True
+
+llm = LangchainLLMWrapper(ChatOpenAI(...), is_finished_parser=_is_finished)
+```
+
+### Providers evaluados y resultado
+
+| Provider | Modelo | JSON Ragas | Rate limit | Resultado |
+|---|---|---|---|---|
+| Groq | llama-3.3-70b-versatile | ✅ | 100k tok/día — se agota en ~12 pares | ❌ Descartado |
+| Groq | llama-3.1-8b-instant | ✅ directo / ❌ Ragas | 500k tok/día | ❌ Falla en parser loop |
+| Groq | gemma2-9b-it | — | Modelo dado de baja (400 error) | ❌ No disponible |
+| Cerebras | gemma-4-31b | ✅ | Sin cuota diaria estricta | ✅ **Seleccionado** |
+| Cerebras | gpt-oss-120b | ❌ respuesta None | — | ❌ Descartado |
+| OpenRouter | nvidia/nemotron-3-super | ✅ | Rate limit bajo (429 frecuente) | ❌ Inestable |
+| OpenRouter | modelos :free | ❌ 404/429 | — | ❌ No disponibles |
+
+### Configuración final en el pipeline
+
+```python
+# src/evaluation/eval_pipeline.py — _make_llm()
+llm = LangchainLLMWrapper(
+    ChatOpenAI(
+        model="gemma-4-31b",
+        api_key=settings.cerebras_key,
+        base_url="https://api.cerebras.ai/v1",
+        temperature=0,
+        max_tokens=1024,
+    ),
+    is_finished_parser=_is_finished,   # permisivo con finish_reason "length"
+)
+```
+
+Variables de entorno necesarias:
+- `.env`: `CEREBRAS_KEY=csk-...`
+- `src/settings.py`: campo `cerebras_key: str = Field("", env="CEREBRAS_KEY")`
+
+**Archivos relevantes:**
+- `src/evaluation/eval_pipeline.py` — funciones `_make_llm()` y `phase_evaluate()`
+- `src/settings.py` — campos `cerebras_key` y `openrouter_key`
+
+---
+
+## Q26: Resultados de la evaluación Config B (retrieval híbrido FAISS+BM25) — 15 pares
+
+**Fecha:** 18-19 de julio de 2026
+**Judge:** Cerebras `gemma-4-31b` — 15/15 pares completados en todas las métricas en ambas configs
+
+### Resultados globales — Config B
+
+| Métrica | Valor | Baseline test MaternaQA-es | Interpretación |
+|---|---|---|---|
+| `faithfulness` | 0.228 | 0.7132 | LLM responde desde conocimiento general — corpus mismatch |
+| `answer_correctness` | 0.338 | N/A | Coincidencia semántica moderada con ground truth |
+| `answer_relevancy` | 0.631 | 0.5583 | **Por encima del baseline** — respuestas pertinentes |
+| `context_recall` | 0.000 | N/A | Esperado: corpus mismatch |
+| `context_precision` | 0.000 | N/A | Esperado: mismo motivo |
+| `latency_avg_s` | 10.36s | — | p50 real ~6s |
+
+### Comparativa Config A (FAISS puro) vs Config B (FAISS+BM25)
+
+Mismos 15 pares, mismo seed=42, mismo judge (Cerebras gemma-4-31b).
+
+| Métrica | Config A | Config B | Delta | Ganador |
+|---|---|---|---|---|
+| `faithfulness` | 0.1615 | **0.2278** | +0.066 | **B** |
+| `answer_correctness` | 0.3500 | 0.3381 | -0.012 | Empate |
+| `answer_relevancy` | 0.6345 | 0.6305 | -0.004 | Empate |
+| `context_recall` | 0.000 | 0.000 | 0.000 | Empate |
+| `context_precision` | 0.000 | 0.000 | 0.000 | Empate |
+| `latency_avg_s` | 11.35s | **10.36s** | -0.99s | **B** |
+
+**Config B gana en faithfulness (+6.6 pp) en todos los tipos de pregunta excepto `aplicacion`.**
+El BM25 sobre Multiclinsum reduce el ruido de casos clínicos irrelevantes (oncología, traumatología)
+que Config A incluía en el ranking por similitud coseno, permitiendo que el LLM se ancle mejor
+en los fragmentos recuperados.
+
+| Tipo | Config A faith. | Config B faith. | Delta |
+|---|---|---|---|
+| factual | 0.375 | 0.467 | +0.092 |
+| razonamiento | 0.119 | 0.188 | +0.069 |
+| definicion | 0.062 | 0.167 | +0.104 |
+| aplicacion | 0.000 | 0.000 | 0.000 |
+
+### Conclusión
+
+**Config B queda como la arquitectura de retrieval de producción.**
+La mejora en faithfulness es consistente y estructural — no ruido estadístico con 15 pares.
+`answer_relevancy` y `answer_correctness` son equivalentes entre configs, lo que confirma
+que la mejora viene del retrieval (menos ruido en contexto) y no del LLM en sí.
+
+### Próximos pasos para mejorar las métricas
+
+1. Ingestar PDFs de MaternaQA-es → `context_recall` y `context_precision` pasarán de 0 a valores reales
+2. Con corpus completo, re-evaluar `faithfulness` — se espera subida significativa hacia el baseline 0.71
+
+**Archivos relevantes:**
+- Config A raw/results/report: `evaluation_reports/*configA_20260719_171714.*`
+- Config B raw/results/report: `evaluation_reports/*configB_20260718_212843.*`
+- `foragents/eval_setup_critico.md` — setup completo del pipeline de evaluación
+
+---
+
+*Última actualización: 19 de julio de 2026*

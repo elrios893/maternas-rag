@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # --- Groq ---
     groq_api_key: str = Field(..., env="GROQ_API_KEY")
+    groq_api_key_2: str = Field("", env="GROQ_API_KEY_2")   # key dedicada para Ragas judge
     groq_model: str = Field("llama-3.1-70b-versatile", env="GROQ_MODEL")
 
     # --- Embedding ---
@@ -36,6 +37,12 @@ class Settings(BaseSettings):
     # --- Telegram Bot ---
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")
+
+    # --- OpenRouter ---
+    openrouter_key: str = Field("", env="OPENROUTER_KEY")
+
+    # --- Cerebras ---
+    cerebras_key: str = Field("", env="CEREBRAS_KEY")
 
     # --- Notifier (Skill) ---
     notifier_enabled: bool = Field(True, env="NOTIFIER_ENABLED")
