@@ -137,13 +137,14 @@ def ingest(include_test: bool = True, dry_run: bool = False) -> None:
     sep = "=" * 62
     print(sep)
     print("  Ingestando MaternaQA-es LM corpus al indice FAISS")
-    print(f"  Splits: train + validation" + (" + test" if include_test else ""))
+    print(f"  Splits: train + validation" + (" + test (LEAKAGE WARNING)" if include_test else " (sin test — correcto para evaluacion)"))
     if dry_run:
         print("  MODO DRY-RUN: no se modificara el indice")
     print(sep)
 
     # 1. Descargar JSONL
     all_records: list[dict] = []
+    # Por defecto descarga solo train+validation (sin leakage)
     splits_to_use = ["train", "validation"] + (["test"] if include_test else [])
 
     for split in splits_to_use:
@@ -230,11 +231,15 @@ if __name__ == "__main__":
         description="Ingesta MaternaQA-es LM corpus al indice FAISS",
         formatter_class=argparse.RawTextHelpFormatter,
     )
+    # Por defecto NO ingestar el split test — evita data leakage en evaluacion.
+    # El split test contiene los chunks exactos de los 3 PDFs que generan los
+    # 328 pares QA del benchmark MaternaQA-es. Si se ingestan, context_recall
+    # y context_precision suben artificialmente (el sistema "ya vio" esos docs).
+    # Usar --include-test solo para medir el upper bound teorico.
     parser.add_argument(
-        "--no-test",
+        "--include-test",
         action="store_true",
-        help="Omitir el split test (usa solo train+validation)\n"
-             "Util para no contaminar la evaluacion con los docs del benchmark",
+        help="Incluir split test (CUIDADO: data leakage en evaluacion con MaternaQA-es)",
     )
     parser.add_argument(
         "--dry-run",
@@ -243,4 +248,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    ingest(include_test=not args.no_test, dry_run=args.dry_run)
+    ingest(include_test=args.include_test, dry_run=args.dry_run)
