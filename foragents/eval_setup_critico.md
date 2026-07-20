@@ -165,40 +165,48 @@ python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_r
 
 ---
 
-## Resultados finales — Comparativa Config A vs Config B
+## Resultados finales — Comparativa A vs B vs C
 
-Evaluaciones completadas: **19 de julio de 2026 — 15/15 pares sin errores en ambas configs**
+Evaluaciones completadas: **19 de julio de 2026 — 15/15 pares sin errores en las 3 configs**
 Judge: Cerebras `gemma-4-31b` | Dataset: MaternaQA-es split test (seed=42, mismos 15 pares)
 
-| Metrica | Config A (FAISS puro) | Config B (FAISS+BM25) | Delta | Ganador |
-|:--------|:--------------------:|:---------------------:|:-----:|:-------:|
-| `faithfulness` | 0.1615 | **0.2278** | +0.066 | **B** |
-| `answer_correctness` | 0.3500 | 0.3381 | -0.012 | Empate |
-| `answer_relevancy` | **0.6345** | 0.6305 | -0.004 | Empate |
-| `context_recall` | 0.000 | 0.000 | 0.000 | Empate |
-| `context_precision` | 0.000 | 0.000 | 0.000 | Empate |
-| `latency_avg_s` | 11.35s | **10.36s** | -0.99s | **B** |
+| Metrica | Config A (FAISS puro) | Config B (FAISS+BM25) | Config C (+obstetrics ES) | Mejor |
+|:--------|:--------------------:|:---------------------:|:------------------------:|:-----:|
+| `faithfulness` | 0.1615 | **0.2278** | 0.1334 | **B** |
+| `answer_correctness` | 0.3500 | 0.3381 | **0.3782** | **C** |
+| `answer_relevancy` | 0.6345 | 0.6305 | **0.6909** | **C** |
+| `context_recall` | 0.000 | 0.000 | **0.033** | **C** |
+| `context_precision` | 0.000 | 0.000 | **0.143** | **C** |
+| `latency_avg_s` | 11.35s | 10.36s | **10.26s** | **C** |
 
-**Config B gana en faithfulness (+6.6 pp) y latencia avg.** El BM25 sobre Multiclinsum
-reduce el ruido de casos clinicos irrelevantes, permitiendo que el LLM se ancle mejor.
+**Interpretacion clave:**
 
-| Tipo pregunta | Config A faith. | Config B faith. | Delta |
-|:---|:---:|:---:|:---:|
-| factual | 0.375 | 0.467 | +0.092 |
-| razonamiento | 0.119 | 0.188 | +0.069 |
-| definicion | 0.062 | 0.167 | +0.104 |
-| aplicacion | 0.000 | 0.000 | 0.000 |
+- **context_recall y context_precision**: Config C es la unica con valores reales > 0.
+  Primer resultado significativo tras ingestar 2.112 chunks de obstetricia en espanol.
 
-Archivos Config A: `eval_raw/results/report_configA_20260719_171714.*`
-Archivos Config B: `eval_raw/results/report_configB_20260718_212843.*`
+- **faithfulness C < B**: los chunks del corpus LM son muy densos (~879 tok) con texto
+  de guias clinicas. El LLM responde mas generalmente sin anclarse en parrafos especificos
+  → Ragas penaliza. Probable mejora con re-chunking a ~400 tok.
 
-### Archivos de retriever por config
+- **answer_relevancy C=0.691** > baseline test 0.5583 — mejor resultado de la serie.
+  El contexto en espanol ayuda al LLM a responder mas pertinentemente.
+
+- **answer_correctness C=0.378** > B y A — mayor coincidencia semantica con ground truth.
+
+**Arquitectura de produccion: Config B** (faithfulness mas alto, corpus limpio).
+**Config C** es el camino correcto pero requiere optimizacion del chunking del corpus ES.
+
+Archivos Config C:
+- Raw: `evaluation_reports/eval_raw_configC_20260719_215215.json`
+- Resultados: `evaluation_reports/eval_results_configC_20260719_215215.json`
+- Reporte MD: `evaluation_reports/eval_report_configC_20260719_215215.md`
 
 | Archivo | Config | Estado |
 |---|---|---|
 | `src/rag/retriever.py` | **Config B (activa)** | Produccion — hibrido FAISS+BM25 |
 | `src/rag/retriever_configA.py` | Config A | FAISS puro — para referencia/replicar |
 | `src/rag/retriever_configB.py` | Config B (backup) | Copia de seguridad del actual |
+| `src/rag/retriever_configC.py` | Config C | FAISS+BM25 + maternaqaes_lm (2112 chunks ES) |
 
 ---
 
@@ -214,5 +222,5 @@ Archivos Config B: `eval_raw/results/report_configB_20260718_212843.*`
 
 ---
 
-*Creado: 18 de julio de 2026 | Actualizado: 19 de julio de 2026 — evaluacion Config A completada*
-*Basado en: Q23, Q24, Q25, Q26 de `foragents/qa_technical.md`*
+*Creado: 18 de julio de 2026 | Actualizado: 19 de julio de 2026 — evaluacion 3 configs completada (A, B, C)*
+*Basado en: Q23-Q27 de `foragents/qa_technical.md`*
