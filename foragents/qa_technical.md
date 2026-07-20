@@ -1148,4 +1148,128 @@ que la mejora viene del retrieval (menos ruido en contexto) y no del LLM en sí.
 
 ---
 
+## Q27: ¿Por qué se ingestan los JSONL del corpus LM y no los PDFs crudos de MaternaQA-es?
+
+**Contexto:** El repositorio `minciencias-maternas/MaternaQA-es` contiene tanto los 63 PDFs
+fuente como un corpus LM ya procesado (`datasets/obstetrics/lm/`). Había que elegir
+cuál ingestar al índice FAISS del sistema RAG.
+
+### Recursos disponibles
+
+**Corpus LM (`datasets/obstetrics/lm/`):**
+- `train_lm.jsonl` — 1.744 chunks, 52 PDFs fuente
+- `validation_lm.jsonl` — 101 chunks, 2 PDFs fuente
+- `test_lm.jsonl` — 108 chunks, 3 PDFs fuente (exactamente los que generan los 328 QA del benchmark)
+- **Total: 1.953 chunks**, promedio 879 tokens/chunk, metadatos ricos
+
+**PDFs crudos (`pdfs/obstetrics/`):**
+- 63 PDFs en español sobre obstetricia — GPCs colombianas, artículos de revistas, manuales
+- Habría que extraer texto (algunos requieren OCR), limpiar, chunkear y deduplicar desde cero
+
+### Razones para elegir los JSONL del corpus LM
+
+**1. El procesamiento ya fue hecho y auditado por el equipo de MaternaQA-es.**
+Cada chunk pasó por: extracción textual, filtrado de páginas no clínicas, chunking con límites
+de longitud, deduplicación, enriquecimiento temático y control de calidad con `clinical_score`.
+Replicar ese procesamiento desde los PDFs crudos tomaría tiempo y podría introducir errores
+de extracción (especialmente en PDFs con tablas o columnas).
+
+**2. Metadatos ricos y trazables listos para usar.**
+Cada registro del LM tiene:
+```json
+{
+  "text": "...",
+  "metadata": {
+    "chunk_id": "GPC-Atencion-Prenatal_00012",
+    "source_pdf": "GPC-Atencion-Prenatal-de-Bajo-Riesgo-2023.pdf",
+    "section_type": "recommendations",
+    "content_role": "recommendation",
+    "topics": ["prenatal_care", "hemorrhage"],
+    "clinical_score": 28,
+    "token_estimate": 879,
+    "split": "test"
+  }
+}
+```
+El campo `split` permite saber si un chunk proviene del split test o train del benchmark,
+lo cual es importante para interpretar correctamente las métricas de evaluación.
+
+**3. Control de contaminación de splits.**
+El repositorio garantiza que la división train/validation/test se hizo **a nivel de documento**,
+sin fuga de información. Esto significa:
+- `test_lm.jsonl` contiene chunks de los 3 PDFs exactos que generaron los 328 pares del test QA
+- Si ingestamos los 3 splits, el retrieval podrá recuperar los fragmentos exactos del benchmark → métricas reales
+- Si ingestamos solo train+val, las métricas del test set siguen siendo "fair" (sin leak)
+
+Para la Config C se ingestan los 3 splits para medir el **upper bound** alcanzable con el corpus completo.
+
+**4. Descarga directa sin dependencias.**
+Los JSONL se descargan directamente de GitHub raw (~2-3 MB total) sin necesidad de
+clonar el repositorio, instalar dependencias adicionales ni tener `poppler` o `tesseract`
+para OCR. Los PDFs de mayor tamaño (ej: `Manual-Obstetricia-y-Ginecologia-2024_compressed.pdf`)
+pueden superar los 50 MB y algunos requieren OCR.
+
+**5. Tamaño manejable y coherente con el hardware disponible.**
+1.953 chunks × 768 dims = ~6 MB de vectores adicionales — completamente insignificante
+comparado con los 375.392 vectores existentes (~1.15 GB). El índice FAISS soporta
+adición incremental sin reconstruir desde cero.
+
+### Estructura de los JSONL del corpus LM
+
+```
+{"text": "<texto clínico en español>",
+ "metadata": {
+   "source": "obstetrics_spanish",
+   "pdf_id": "<nombre_sin_extension>",
+   "source_pdf": "<nombre_con_extension.pdf>",
+   "doc_type": "article" | "guideline" | ...,
+   "pages": [<numeros de pagina>],
+   "section": "<titulo de seccion>",
+   "chunk_id": "<pdf_id>_<NNNNN>",
+   "token_estimate": <int>,
+   "clinical_score": <int 0-30>,
+   "section_type": "recommendations" | "clinical_content" | "introduction" | ...,
+   "content_role": "recommendation" | "evidence" | "treatment" | "background" | ...,
+   "topics": [<lista de temas clinicos>],
+   "split": "train" | "validation" | "test"
+ }
+}
+```
+
+### Mapeo al formato FAISSStore del proyecto
+
+El `FAISSStore` del proyecto almacena metadatos con esta estructura:
+```python
+{
+    "text":           chunk["text"],
+    "source_dataset": "maternaqaes_lm",   # nuevo dataset_id
+    "language":       "es",
+    "doc_id":         chunk["metadata"]["pdf_id"],
+    "chunk_id":       chunk["metadata"]["chunk_id"],
+    # campos adicionales preservados:
+    "topics":         chunk["metadata"]["topics"],
+    "clinical_score": chunk["metadata"]["clinical_score"],
+    "section_type":   chunk["metadata"]["section_type"],
+    "content_role":   chunk["metadata"]["content_role"],
+    "lm_split":       chunk["metadata"]["split"],
+}
+```
+
+### Impacto esperado en las métricas (Config C)
+
+| Métrica | Antes (Config B) | Esperado (Config C) | Razón |
+|---|---|---|---|
+| `faithfulness` | 0.228 | ~0.50–0.65 | El LLM podrá anclar en fragmentos en español |
+| `answer_correctness` | 0.338 | ~0.45–0.60 | Mayor coincidencia semántica con ground truth |
+| `answer_relevancy` | 0.631 | ~0.63–0.70 | Similar o ligeramente mejor |
+| `context_recall` | 0.000 | **~0.30–0.60** | El corpus ahora tiene los documentos del benchmark |
+| `context_precision` | 0.000 | **~0.20–0.50** | Fragmentos relevantes recuperados |
+
+**Archivos relevantes:**
+- `src/ingestion/ingest_maternaqaes_lm.py` — script de ingestión (a crear)
+- `src/rag/retriever_configC.py` — config C con `maternaqaes_lm` en DENSE_SOURCES (a crear)
+- `foragents/retrieval_arquitecturas_configs.md` — documentación de configs
+
+---
+
 *Última actualización: 19 de julio de 2026*
