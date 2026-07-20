@@ -1,31 +1,30 @@
 """
 ingest_maternaqaes_lm.py — Ingesta el corpus LM de MaternaQA-es al indice FAISS.
 
-Descarga los 3 splits del corpus LM directamente desde GitHub raw:
+Descarga los splits train+validation del corpus LM desde GitHub raw
+(test excluido por defecto para evitar data leakage en evaluacion):
   - train_lm.jsonl    (1.744 chunks, 52 PDFs, split train)
   - validation_lm.jsonl (101 chunks, 2 PDFs, split validation)
-  - test_lm.jsonl     (108 chunks, 3 PDFs, split test — mismos del benchmark QA)
 
-Total: 1.953 chunks de obstetricia en espanol, promedio 879 tokens/chunk.
+Los chunks del LM dataset tienen ~879 tokens en promedio — demasiado densos
+para que Ragas pueda verificar statements contra fragmentos especificos.
+Se aplica re-chunking con RecursiveCharacterTextSplitter a ~400 tok / 80 overlap
+para obtener fragmentos precisos y citables.
 
-Por que JSONL y no PDFs crudos:
-  - Ya procesados, limpios y auditados por el equipo MaternaQA-es
-  - Metadatos ricos: clinical_score, topics, section_type, content_role
-  - Sin necesidad de OCR ni chunking manual
-  - Ver foragents/qa_technical.md Q27 para decision completa
+Filtro de calidad: solo chunks con clinical_score >= MIN_CLINICAL_SCORE (default 15).
+Descarta introducciones, bibliografias y secciones administrativas.
 
-Los chunks se agregan con source_dataset="maternaqaes_lm" al indice FAISS existente
-(incremental — no reconstruye los 375k vectores actuales).
+Por que JSONL y no PDFs crudos: ver foragents/qa_technical.md Q27.
 
 Uso:
-    # Ingestar los 3 splits (para Config C — upper bound con corpus completo)
+    # Ingestion normal (train+val, re-chunkeado, sin leakage)
     python -m src.ingestion.ingest_maternaqaes_lm
 
-    # Solo train+val (para Config D — sin contaminacion del test set)
-    python -m src.ingestion.ingest_maternaqaes_lm --no-test
-
-    # Solo verificar cuantos chunks tendria, sin ingestar
+    # Dry-run: estadisticas sin modificar el indice
     python -m src.ingestion.ingest_maternaqaes_lm --dry-run
+
+    # Incluir split test (LEAKAGE WARNING — solo para upper bound)
+    python -m src.ingestion.ingest_maternaqaes_lm --include-test
 """
 
 from __future__ import annotations
@@ -33,11 +32,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 import urllib.request
 from pathlib import Path
 from typing import Iterator
 
 from tqdm import tqdm
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -59,6 +60,22 @@ SPLITS = {
 
 DATASET_ID = "maternaqaes_lm"
 BATCH_SIZE  = 128
+
+# Re-chunking: ~400 tokens / 80 overlap (1 token ≈ 4 chars)
+CHUNK_SIZE_CHARS    = 400 * 4   # 1600 chars
+CHUNK_OVERLAP_CHARS = 80  * 4   # 320 chars
+MIN_CHUNK_CHARS     = 100       # descartar fragmentos muy cortos
+
+# Filtro de calidad: solo chunks con clinical_score >= este umbral
+# Descarta introducciones, bibliografias y secciones administrativas
+MIN_CLINICAL_SCORE  = 15
+
+_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=CHUNK_SIZE_CHARS,
+    chunk_overlap=CHUNK_OVERLAP_CHARS,
+    separators=["\n\n", "\n", ". ", " "],
+    length_function=len,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,31 +104,57 @@ def _download_jsonl(url: str, split_name: str) -> list[dict]:
     return records
 
 
-def _to_document(record: dict) -> Document | None:
-    """Convierte un registro del LM dataset al formato Document del proyecto."""
-    text = record.get("text", "").strip()
+def _to_documents(record: dict) -> list[Document]:
+    """
+    Convierte un registro del LM dataset en UNO O MAS Documents
+    aplicando re-chunking a ~400 tokens con RecursiveCharacterTextSplitter.
+
+    Filtros aplicados:
+      - Texto < 50 chars: descartado
+      - clinical_score < MIN_CLINICAL_SCORE: descartado (intro, biblio, admin)
+      - Sub-chunks < MIN_CHUNK_CHARS tras el split: descartados
+    """
+    text  = record.get("text", "").strip()
+    meta  = record.get("metadata", {})
+    score = meta.get("clinical_score", 0)
+
     if not text or len(text) < 50:
-        return None
+        return []
+    if score < MIN_CLINICAL_SCORE:
+        return []
 
-    meta = record.get("metadata", {})
+    base_meta = {
+        "source_dataset": DATASET_ID,
+        "language":       "es",
+        "doc_id":         meta.get("pdf_id", "unknown"),
+        "source_pdf":     meta.get("source_pdf", ""),
+        "section_type":   meta.get("section_type", ""),
+        "content_role":   meta.get("content_role", ""),
+        "topics":         meta.get("topics", []),
+        "clinical_score": score,
+        "token_estimate": meta.get("token_estimate", 0),
+        "lm_split":       meta.get("split", ""),
+        "pages":          meta.get("pages", []),
+        "parent_chunk_id": meta.get("chunk_id", ""),
+    }
 
-    return Document(
-        text=text,
-        metadata={
-            "source_dataset": DATASET_ID,
-            "language":       "es",
-            "doc_id":         meta.get("pdf_id", "unknown"),
-            "chunk_id":       meta.get("chunk_id", ""),
-            "source_pdf":     meta.get("source_pdf", ""),
-            "section_type":   meta.get("section_type", ""),
-            "content_role":   meta.get("content_role", ""),
-            "topics":         meta.get("topics", []),
-            "clinical_score": meta.get("clinical_score", 0),
-            "token_estimate": meta.get("token_estimate", 0),
-            "lm_split":       meta.get("split", ""),
-            "pages":          meta.get("pages", []),
-        },
-    )
+    # Si el texto ya es corto (<= CHUNK_SIZE_CHARS) no hace falta splitear
+    if len(text) <= CHUNK_SIZE_CHARS:
+        return [Document(
+            text=text,
+            metadata={**base_meta, "chunk_id": meta.get("chunk_id", str(uuid.uuid4()))},
+        )]
+
+    # Re-chunking con RecursiveCharacterTextSplitter
+    sub_texts = _splitter.split_text(text)
+    docs = []
+    for idx, sub in enumerate(sub_texts):
+        sub = sub.strip()
+        if len(sub) < MIN_CHUNK_CHARS:
+            continue
+        chunk_meta = {**base_meta, "chunk_id": f"{meta.get('chunk_id','x')}_{idx:02d}"}
+        docs.append(Document(text=sub, metadata=chunk_meta))
+    return docs
 
 
 # ---------------------------------------------------------------------------
@@ -153,21 +196,35 @@ def ingest(include_test: bool = True, dry_run: bool = False) -> None:
 
     print(f"\n  Total registros descargados: {len(all_records)}")
 
-    # 2. Convertir a Documents
+    # 2. Convertir a Documents con re-chunking
     documents: list[Document] = []
-    skipped = 0
-    for rec in all_records:
-        doc = _to_document(rec)
-        if doc:
-            documents.append(doc)
-        else:
-            skipped += 1
+    skipped_short = 0
+    skipped_score = 0
+    original_chunks = 0
 
-    print(f"  Documents validos: {len(documents)} | Omitidos (muy cortos): {skipped}")
+    for rec in all_records:
+        original_chunks += 1
+        score = rec.get("metadata", {}).get("clinical_score", 0)
+        text  = rec.get("text", "").strip()
+        if not text or len(text) < 50:
+            skipped_short += 1
+            continue
+        if score < MIN_CLINICAL_SCORE:
+            skipped_score += 1
+            continue
+        docs = _to_documents(rec)
+        documents.extend(docs)
+
+    avg_tok = sum(len(d.text) // 4 for d in documents) / max(1, len(documents))
+    print(f"  Chunks originales      : {original_chunks}")
+    print(f"  Omitidos (texto corto) : {skipped_short}")
+    print(f"  Omitidos (score<{MIN_CLINICAL_SCORE})   : {skipped_score}")
+    print(f"  Sub-chunks tras split  : {len(documents)}")
+    print(f"  Promedio tokens/chunk  : {avg_tok:.0f} tok")
 
     if dry_run:
-        print(f"\n  [DRY-RUN] Se ingrestarian {len(documents)} chunks.")
-        print(f"  Tokens estimados totales: {sum(d.metadata.get('token_estimate',0) for d in documents):,}")
+        print(f"\n  [DRY-RUN] Se ingrestarian {len(documents)} sub-chunks.")
+        print(f"  Tokens totales estimados: {sum(len(d.text)//4 for d in documents):,}")
         _print_breakdown(documents)
         return
 
