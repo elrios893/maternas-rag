@@ -166,7 +166,7 @@ El sistema se evalúa con el framework **Ragas** sobre el benchmark **MaternaQA-
 python src/evaluation/eval_pipeline.py --config configC --sample 15 --generate-only
 
 # Fase 2: evaluar con Ragas
-python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_configC_<ts>.json
+python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_configC_<TIMESTAMP>.json
 ```
 
 Ver guía completa en `foragents/eval_runbook.md`.
