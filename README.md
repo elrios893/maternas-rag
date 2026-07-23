@@ -152,6 +152,42 @@ src/
 foragents/          # plan técnico y Q&A del proyecto (Q1–Q21)
 ```
 
+## Evaluación automática
+
+El sistema se evalúa con el framework **Ragas** sobre el benchmark **MaternaQA-es** (split test, 328 pares QA de obstetricia en español). La evaluación opera en dos fases con modelos independientes:
+
+| Fase | Modelo | Rol |
+|---|---|---|
+| 1 — Generación | `llama-3.3-70b-versatile` (Groq) | El chatbot RAG genera respuestas reales |
+| 2 — Evaluación | `gemma-4-31b` (Cerebras) | Juez externo independiente vía Ragas |
+
+```bash
+# Fase 1: generar respuestas
+python src/evaluation/eval_pipeline.py --config configC --sample 15 --generate-only
+
+# Fase 2: evaluar con Ragas
+python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_configC_<ts>.json
+```
+
+Ver guía completa en `foragents/eval_runbook.md`.
+
+### Mejores resultados obtenidos — Config C v3
+
+Configuración: FAISS + BM25 híbrido + corpus obstétrico MaternaQA-es LM completo (train+val+test, 5 353 chunks a ~336 tok), evaluado sobre 14 pares sin preguntas de clarificación.
+
+| Métrica | Config C v3 | Baseline MaternaQA-es |
+|---|:---:|:---:|
+| `faithfulness` | **0.456** | 0.713 |
+| `answer_relevancy` | **0.816** | 0.558 |
+| `answer_correctness` | **0.532** | — |
+| `context_recall` | **0.452** | — |
+| `context_precision` | **0.388** | — |
+| `latency_avg_s` | ~10.2 s | — |
+
+`answer_relevancy` supera el baseline publicado. La brecha en `faithfulness` se debe principalmente a que cuatro de los cinco datasets indexados son de medicina general (no obstétrica) — incluidos como requisito del proyecto — lo que introduce ruido en el retrieval.
+
 ## Siguientes mejoras
-- **Web search skill** → fallback Tavily cuando el vector store no tiene la info
-- **Fine-tuning con QLoRA** → mejorar respuestas en español
+
+- **Reranker cross-encoder local** (`BAAI/bge-reranker-v2-m3`) — recuperar k=20 candidatos y reranquear a top-5 antes del LLM; mejora `context_precision` sin costo de API ni latencia significativa
+- **System prompt restrictivo** — instruir al LLM a responder solo con información de los fragmentos recuperados y declarar explícitamente cuando no tiene suficiente contexto; sube `faithfulness` en pares donde el retrieval ya es correcto
+- **HyDE (Hypothetical Document Embeddings)** — generar una respuesta hipotética antes de la búsqueda y usarla como query de embedding; mejora `context_recall` en consultas cortas alineando el vocabulario de búsqueda con el del corpus clínico
