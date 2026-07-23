@@ -30,3 +30,6 @@ __MACOSX/
 # Editor
 .vscode/
 .idea/
+
+# Carpeta local no versionada (informes, documentos internos)
+no_repo/

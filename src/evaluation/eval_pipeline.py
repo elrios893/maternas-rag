@@ -317,6 +317,15 @@ def phase_evaluate(raw_path: Path) -> dict:
     latency_avg = raw.get("latency_avg", -1)
     latency_p95 = raw.get("latency_p95", -1)
 
+    # Filtrar pares que necesitan clarificacion (needs_clarification=True)
+    # Una pregunta de clarificacion no tiene statements verificables
+    # contra contexto → faithfulness siempre=0, distorsiona la metrica
+    rows_before = len(rows)
+    rows = [r for r in rows if not r.get("needs_clarification", False)]
+    rows_excl = rows_before - len(rows)
+    if rows_excl:
+        print(f"\n  Excluidos por needs_clarification: {rows_excl} pares")
+
     print(f"\n  {len(rows)} pares  |  config={config_name or 'default'}  |  "
           f"latencia avg={latency_avg}s  p95={latency_p95}s\n")
 

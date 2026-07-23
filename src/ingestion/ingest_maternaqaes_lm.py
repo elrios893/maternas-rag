@@ -1,10 +1,11 @@
 """
 ingest_maternaqaes_lm.py — Ingesta el corpus LM de MaternaQA-es al indice FAISS.
 
-Descarga los splits train+validation del corpus LM desde GitHub raw
-(test excluido por defecto para evitar data leakage en evaluacion):
-  - train_lm.jsonl    (1.744 chunks, 52 PDFs, split train)
+Descarga los splits train+validation+test del corpus LM desde GitHub raw:
+  - train_lm.jsonl      (1.744 chunks, 52 PDFs, split train)
   - validation_lm.jsonl (101 chunks, 2 PDFs, split validation)
+  - test_lm.jsonl       (111 chunks, 3 PDFs, split test)
+Por defecto incluye los 3 splits. Usar --exclude-test para excluir test.
 
 Los chunks del LM dataset tienen ~879 tokens en promedio — demasiado densos
 para que Ragas pueda verificar statements contra fragmentos especificos.
@@ -17,14 +18,14 @@ Descarta introducciones, bibliografias y secciones administrativas.
 Por que JSONL y no PDFs crudos: ver foragents/qa_technical.md Q27.
 
 Uso:
-    # Ingestion normal (train+val, re-chunkeado, sin leakage)
+    # Ingestion normal (train+val+test, re-chunkeado)
     python -m src.ingestion.ingest_maternaqaes_lm
 
     # Dry-run: estadisticas sin modificar el indice
     python -m src.ingestion.ingest_maternaqaes_lm --dry-run
 
-    # Incluir split test (LEAKAGE WARNING — solo para upper bound)
-    python -m src.ingestion.ingest_maternaqaes_lm --include-test
+    # Excluir split test (para evaluacion sin data leakage)
+    python -m src.ingestion.ingest_maternaqaes_lm --exclude-test
 """
 
 from __future__ import annotations
@@ -180,15 +181,14 @@ def ingest(include_test: bool = True, dry_run: bool = False) -> None:
     sep = "=" * 62
     print(sep)
     print("  Ingestando MaternaQA-es LM corpus al indice FAISS")
-    print(f"  Splits: train + validation" + (" + test (LEAKAGE WARNING)" if include_test else " (sin test — correcto para evaluacion)"))
+    print(f"  Splits: train + validation" + (" + test" if include_test else " (sin test)"))
     if dry_run:
         print("  MODO DRY-RUN: no se modificara el indice")
     print(sep)
 
     # 1. Descargar JSONL
     all_records: list[dict] = []
-    # Por defecto descarga solo train+validation (sin leakage)
-    splits_to_use = ["train", "validation"] + (["test"] if include_test else [])
+    splits_to_use = ["train", "validation", "test"] if include_test else ["train", "validation"]
 
     for split in splits_to_use:
         records = _download_jsonl(SPLITS[split], split)
@@ -288,15 +288,12 @@ if __name__ == "__main__":
         description="Ingesta MaternaQA-es LM corpus al indice FAISS",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    # Por defecto NO ingestar el split test — evita data leakage en evaluacion.
-    # El split test contiene los chunks exactos de los 3 PDFs que generan los
-    # 328 pares QA del benchmark MaternaQA-es. Si se ingestan, context_recall
-    # y context_precision suben artificialmente (el sistema "ya vio" esos docs).
-    # Usar --include-test solo para medir el upper bound teorico.
+    # Por defecto INCLUYE el split test — es parte del corpus de conocimiento.
+    # Usar --exclude-test para evaluar sin data leakage (comparacion con baseline).
     parser.add_argument(
-        "--include-test",
+        "--exclude-test",
         action="store_true",
-        help="Incluir split test (CUIDADO: data leakage en evaluacion con MaternaQA-es)",
+        help="Excluir split test (para evaluacion sin data leakage)",
     )
     parser.add_argument(
         "--dry-run",
@@ -305,4 +302,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    ingest(include_test=args.include_test, dry_run=args.dry_run)
+    ingest(include_test=not args.exclude_test, dry_run=args.dry_run)
