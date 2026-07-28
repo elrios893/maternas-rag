@@ -106,3 +106,37 @@ class DocumentStatsResponse(BaseModel):
     faiss_loaded:  bool
     model:         str
     indexed_at:    str
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/{doc_id}
+# ---------------------------------------------------------------------------
+
+TYPED_CHUNK_FIELDS = {
+    "chunk_id", "chunk_index", "text", "language",
+    "source_dataset", "is_chunk", "subject", "topic", "filename",
+}
+
+
+class ChunkDetail(BaseModel):
+    chunk_id:      str
+    chunk_index:   int
+    text:          str
+    text_length:   int
+    language:      str
+    source_dataset: str
+    is_chunk:      bool
+    subject:       Optional[str] = None
+    topic:         Optional[str] = None
+    filename:      Optional[str] = None
+    metadata:      dict = Field(default_factory=dict, description="Atributos adicionales del índice")
+
+
+class DocumentDetailResponse(BaseModel):
+    doc_id:         str
+    source_dataset: str
+    language:       str
+    chunk_count:    int
+    total_chars:    int
+    has_chunks:     bool
+    chunks:         list[ChunkDetail]

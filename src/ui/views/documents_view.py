@@ -5,7 +5,7 @@ documents_view.py — Vista del Centro de Gestión Documental del RAG.
 import streamlit as st
 import httpx
 
-from src.ui.client import get_document_stats, list_documents
+from src.ui.client import get_document_detail, get_document_stats, list_documents
 
 
 def _render_stat_card(title: str, value: str) -> None:
@@ -53,17 +53,88 @@ def _render_document_card(doc: dict) -> None:
     source = doc.get("source_dataset", "—")
     chunk_count = doc.get("chunk_count", 0)
     total_chars = doc.get("total_chars", 0)
-    size_str = f"{total_chars / 1_048_576:.1f} MB" if total_chars else "—"
+    size_str = f"{total_chars:,}" if total_chars else "—"
 
     with st.container(border=True):
         st.write(f"📄 **{doc_id}**")
-        st.caption(f"{source} · {chunk_count} fragmentos · {size_str}")
+        st.caption(f"{source} · {chunk_count} fragmentos · {size_str} caracteres")
         st.caption("Estado: ✅ Indexado")
         col1, col2 = st.columns(2)
         with col1:
-            st.button("Ver detalles", key=f"detail_{doc_id}", disabled=True, use_container_width=True)
+            if st.button("Ver detalles", key=f"detail_{doc_id}", use_container_width=True):
+                _show_document_detail(doc_id)
         with col2:
             st.button("Eliminar", key=f"delete_{doc_id}", disabled=True, use_container_width=True)
+
+
+def _fmt_bool(v):
+    if v is True:
+        return "✅ Sí"
+    if v is False:
+        return "❌ No"
+    return str(v)
+
+
+_MARKERS = frozenset({
+    "[QUESTION]", "[ANSWER]", "[EXPLANATION]",
+    "[SOURCE]", "[OPTIONS]", "[SUBJECT]", "[TOPIC]",
+})
+
+
+def _render_chunk_text(text: str) -> None:
+    if not any(m in text for m in _MARKERS):
+        st.write(text)
+        return
+    formatted = text
+    for m in _MARKERS:
+        formatted = formatted.replace(m, f"**{m}**")
+    st.write(formatted)
+
+
+@st.dialog("Detalle del documento")
+def _show_document_detail(doc_id: str) -> None:
+    with st.spinner("Cargando detalle..."):
+        try:
+            detail = get_document_detail(doc_id)
+        except httpx.HTTPError:
+            st.error("No se pudo cargar el detalle del documento.")
+            st.stop()
+
+    st.write(f"**{detail['doc_id']}**")
+    st.caption(
+        f"{detail['source_dataset']} · {detail['language']} · "
+        f"{detail['chunk_count']} fragmentos · "
+        f"{detail['total_chars']:,} caracteres"
+    )
+    st.divider()
+
+    chunks = detail.get("chunks", [])
+    total_chunks = len(chunks)
+    for chunk in chunks:
+        chunk_idx = chunk.get("chunk_index", 0)
+        text_len = chunk.get("text_length", 0)
+
+        label = f"Fragmento {chunk_idx + 1} de {total_chunks} — {text_len:,} caracteres"
+
+        with st.container(border=True):
+            with st.expander(label):
+                if chunk.get("subject"):
+                    st.caption(f"Tema: {chunk['subject']}")
+                if chunk.get("topic"):
+                    st.caption(f"Tópico: {chunk['topic']}")
+                if chunk.get("filename"):
+                    st.caption(f"Archivo: {chunk['filename']}")
+
+                st.divider()
+                _render_chunk_text(chunk["text"])
+                st.divider()
+
+                extra = chunk.get("metadata", {})
+                extra = {k: v for k, v in extra.items() if k != "doc_id"}
+                if extra:
+                    st.caption("Metadatos técnicos")
+                    for k, v in extra.items():
+                        st.caption(f"• {k}: {_fmt_bool(v)}")
 
 
 def render_documents() -> None:

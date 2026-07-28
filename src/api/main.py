@@ -29,12 +29,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.schemas import (
     ChatRequest,
     ChatResponse,
+    ChunkDetail,
     ClassifyRequest,
     ClassifyResponse,
+    DocumentDetailResponse,
     DocumentListResponse,
     DocumentStatsResponse,
     HealthResponse,
     SourceDoc,
+    TYPED_CHUNK_FIELDS,
 )
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
@@ -276,4 +279,59 @@ def list_documents(
         total=total,
         page=page,
         per_page=per_page,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /documents/{doc_id}
+# ---------------------------------------------------------------------------
+
+@app.get("/documents/{doc_id}", response_model=DocumentDetailResponse, tags=["documentos"])
+def get_document_detail(doc_id: str) -> DocumentDetailResponse:
+    """Detalle de un documento con todos sus fragmentos."""
+    try:
+        store = _get_store()
+    except Exception:
+        logger.exception("Error al acceder al índice FAISS para /documents/{doc_id}")
+        raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
+
+    chunks: list[dict[str, Any]] = []
+    total_chars = 0
+
+    for entry in store.metadata.values():
+        if entry.get("doc_id") != doc_id:
+            continue
+        total_chars += len(entry.get("text", ""))
+        chunks.append(entry)
+
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"Documento '{doc_id}' no encontrado")
+
+    chunks.sort(key=lambda c: c.get("chunk_index", 0))
+
+    first = chunks[0]
+
+    return DocumentDetailResponse(
+        doc_id=doc_id,
+        source_dataset=first.get("source_dataset", ""),
+        language=first.get("language", ""),
+        chunk_count=len(chunks),
+        total_chars=total_chars,
+        has_chunks=any(c.get("is_chunk", False) for c in chunks),
+        chunks=[
+            ChunkDetail(
+                chunk_id=c.get("chunk_id", ""),
+                chunk_index=c.get("chunk_index", 0),
+                text=c.get("text", ""),
+                text_length=len(c.get("text", "")),
+                language=c.get("language", ""),
+                source_dataset=c.get("source_dataset", ""),
+                is_chunk=c.get("is_chunk", False),
+                subject=c.get("subject"),
+                topic=c.get("topic"),
+                filename=c.get("filename"),
+                metadata={k: v for k, v in c.items() if k not in TYPED_CHUNK_FIELDS},
+            )
+            for c in chunks
+        ],
     )
