@@ -37,6 +37,8 @@ from src.api.schemas import (
     DocumentStatsResponse,
     HealthResponse,
     SourceDoc,
+    ToggleDocumentStatus,
+    ToggleDocumentResponse,
     TYPED_CHUNK_FIELDS,
 )
 from src.classifiers.intent_classifier import classify_intent
@@ -96,7 +98,7 @@ def _group_documents(store) -> dict[str, dict[str, Any]]:
     """Agrupa todos los chunks del store por doc_id.
 
     Retorna { doc_id: { doc_id, source_dataset, language,
-                        chunk_count, total_chars, has_chunks } }
+                        chunk_count, total_chars, has_chunks, active } }
     """
     groups: dict[str, dict[str, Any]] = {}
     for entry in store.metadata.values():
@@ -111,6 +113,7 @@ def _group_documents(store) -> dict[str, dict[str, Any]]:
                 "chunk_count":    0,
                 "total_chars":    0,
                 "has_chunks":     entry.get("is_chunk", False),
+                "active":         entry.get("active", True),
             }
         groups[doc_id]["chunk_count"] += 1
         groups[doc_id]["total_chars"] += len(entry.get("text", ""))
@@ -334,4 +337,38 @@ def get_document_detail(doc_id: str) -> DocumentDetailResponse:
             )
             for c in chunks
         ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /documents/{doc_id}
+# ---------------------------------------------------------------------------
+
+@app.patch(
+    "/documents/{doc_id}",
+    response_model=ToggleDocumentResponse,
+    tags=["documentos"],
+)
+def toggle_document_status(doc_id: str, body: ToggleDocumentStatus) -> ToggleDocumentResponse:
+    """Activa o desactiva un documento (deja de participar en el RAG)."""
+    try:
+        store = _get_store()
+    except Exception:
+        logger.exception("Error al acceder al índice FAISS para PATCH /documents/{doc_id}")
+        raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
+
+    affected = store.update_document_status(doc_id, active=body.active)
+
+    if affected == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Documento '{doc_id}' no encontrado",
+        )
+
+    store.save_metadata()
+
+    return ToggleDocumentResponse(
+        doc_id=doc_id,
+        active=body.active,
+        affected_chunks=affected,
     )

@@ -15,14 +15,11 @@ Archivos que gestiona en faiss_store/:
   build_info.json  ← auditoría: modelo, fecha, total de vectores
 """
 
-import os
 import json
 import pickle
-import time
 import faiss
-import numpy as np
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 from pathlib import Path
 
 from src.ingestion.formatters import Document
@@ -65,7 +62,6 @@ class FAISSStore:
     def __init__(self, index: faiss.IndexFlatIP, metadata: Dict[int, dict]):
         self.index    = index
         self.metadata = metadata          # { faiss_id (int) → {text, chunk_id, source, ...} }
-        self._dim     = index.d
 
     # ------------------------------------------------------------------
     # Constructores
@@ -140,19 +136,15 @@ class FAISSStore:
     # Persistencia
     # ------------------------------------------------------------------
 
-    def save(self, embedding_model: str = None) -> None:
-        """Persiste el índice y la metadata en faiss_store/."""
-        store_path = settings.faiss_store_path
-        store_path.mkdir(parents=True, exist_ok=True)
-
-        # Guardar índice FAISS
-        faiss.write_index(self.index, str(_index_path()))
-
-        # Guardar metadata
-        with open(_metadata_path(), "wb") as f:
+    def _write_metadata_file(self) -> None:
+        """Escribe metadata.pkl con tmp+rename atómico."""
+        tmp = _metadata_path().with_suffix(".pkl.tmp")
+        with open(tmp, "wb") as f:
             pickle.dump(self.metadata, f)
+        tmp.replace(_metadata_path())
 
-        # Guardar build_info
+    def _write_build_info(self, embedding_model: str | None = None) -> None:
+        """Escribe build_info.json con el estado actual del índice."""
         build_info = {
             "embedding_model": embedding_model or settings.embedding_model,
             "faiss_index_type": "IndexFlatIP",
@@ -163,10 +155,30 @@ class FAISSStore:
         with open(_build_info_path(), "w", encoding="utf-8") as f:
             json.dump(build_info, f, indent=2)
 
+    def save(self, embedding_model: str = None) -> None:
+        """Persiste el índice, la metadata y build_info en faiss_store/."""
+        store_path = settings.faiss_store_path
+        store_path.mkdir(parents=True, exist_ok=True)
+
+        faiss.write_index(self.index, str(_index_path()))
+        self._write_metadata_file()
+        self._write_build_info(embedding_model)
+
         print(f"[FAISSStore] Guardado en '{store_path}'")
         print(f"  index.faiss  : {_index_path().stat().st_size / 1e6:.1f} MB")
         print(f"  metadata.pkl : {_metadata_path().stat().st_size / 1e6:.1f} MB")
         print(f"  Total vectores: {self.index.ntotal:,}")
+
+    def save_metadata(self, embedding_model: str = None) -> None:
+        """Persiste únicamente metadata.pkl y build_info (sin index.faiss)."""
+        store_path = settings.faiss_store_path
+        store_path.mkdir(parents=True, exist_ok=True)
+
+        self._write_metadata_file()
+        self._write_build_info(embedding_model)
+
+        print(f"[FAISSStore] metadata guardada en '{store_path}'")
+        print(f"  metadata.pkl : {_metadata_path().stat().st_size / 1e6:.1f} MB")
 
     # ------------------------------------------------------------------
     # Retrieval
@@ -204,12 +216,36 @@ class FAISSStore:
             if faiss_id == -1:          # FAISS devuelve -1 si no hay suficientes vectores
                 continue
             meta = self.metadata.get(int(faiss_id), {})
+            if not meta.get("active", True):
+                continue
             results.append({
                 "score":      float(score),
                 **meta,
             })
 
         return results
+
+    # ------------------------------------------------------------------
+    # Administración
+    # ------------------------------------------------------------------
+
+    def update_document_status(self, doc_id: str, active: bool) -> int:
+        """Activa o desactiva todos los chunks de un documento.
+
+        Args:
+            doc_id: Identificador del documento.
+            active: Nuevo estado (True=activo, False=inactivo).
+
+        Returns:
+            Número de chunks afectados.
+        """
+        affected = 0
+        for entry in self.metadata.values():
+            if entry.get("doc_id") != doc_id:
+                continue
+            entry["active"] = active
+            affected += 1
+        return affected
 
     # ------------------------------------------------------------------
     # Info

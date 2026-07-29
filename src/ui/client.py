@@ -47,3 +47,13 @@ def get_document_detail(doc_id: str) -> dict:
     r = httpx.get(f"{API_URL}/documents/{quote(doc_id, safe='')}", timeout=10)
     r.raise_for_status()
     return r.json()
+
+
+def toggle_document_status(doc_id: str, active: bool) -> dict:
+    r = httpx.patch(
+        f"{API_URL}/documents/{quote(doc_id, safe='')}",
+        json={"active": active},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()

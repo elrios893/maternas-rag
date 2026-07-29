@@ -5,7 +5,12 @@ documents_view.py — Vista del Centro de Gestión Documental del RAG.
 import streamlit as st
 import httpx
 
-from src.ui.client import get_document_detail, get_document_stats, list_documents
+from src.ui.client import (
+    get_document_detail,
+    get_document_stats,
+    list_documents,
+    toggle_document_status,
+)
 
 
 def _render_stat_card(title: str, value: str) -> None:
@@ -54,17 +59,24 @@ def _render_document_card(doc: dict) -> None:
     chunk_count = doc.get("chunk_count", 0)
     total_chars = doc.get("total_chars", 0)
     size_str = f"{total_chars:,}" if total_chars else "—"
+    is_active = doc.get("active", True)
+    status_text = "✅ Indexado" if is_active else "⏸️ Inactivo"
 
     with st.container(border=True):
         st.write(f"📄 **{doc_id}**")
         st.caption(f"{source} · {chunk_count} fragmentos · {size_str} caracteres")
-        st.caption("Estado: ✅ Indexado")
+        st.caption(f"Estado: {status_text}")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Ver detalles", key=f"detail_{doc_id}", use_container_width=True):
                 _show_document_detail(doc_id)
         with col2:
-            st.button("Eliminar", key=f"delete_{doc_id}", disabled=True, use_container_width=True)
+            btn_label = "Activar" if not is_active else "Desactivar"
+            if st.button(btn_label, key=f"toggle_{doc_id}", use_container_width=True):
+                if is_active:
+                    _confirm_deactivate(doc_id)
+                else:
+                    _toggle_doc_status(doc_id, active=True)
 
 
 def _fmt_bool(v):
@@ -89,6 +101,30 @@ def _render_chunk_text(text: str) -> None:
     for m in _MARKERS:
         formatted = formatted.replace(m, f"**{m}**")
     st.write(formatted)
+
+
+def _toggle_doc_status(doc_id: str, active: bool) -> None:
+    try:
+        toggle_document_status(doc_id, active=active)
+        st.session_state.doc_loaded = False
+        st.rerun()
+    except httpx.HTTPError:
+        st.error("Error al cambiar el estado del documento")
+
+
+@st.dialog("Confirmar desactivación")
+def _confirm_deactivate(doc_id: str) -> None:
+    st.write(f"¿Desactivar el documento **{doc_id}**?")
+    st.write("Los fragmentos de este documento dejarán de participar en las respuestas del asistente.")
+    st.write("Puedes reactivarlo en cualquier momento desde el panel.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Cancelar", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("Desactivar", use_container_width=True, type="primary"):
+            _toggle_doc_status(doc_id, active=False)
 
 
 @st.dialog("Detalle del documento")

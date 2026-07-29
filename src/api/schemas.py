@@ -90,6 +90,7 @@ class DocumentSummary(BaseModel):
     chunk_count:    int
     total_chars:    int
     has_chunks:     bool
+    active:         bool = True
 
 
 class DocumentListResponse(BaseModel):
@@ -140,3 +141,17 @@ class DocumentDetailResponse(BaseModel):
     total_chars:    int
     has_chunks:     bool
     chunks:         list[ChunkDetail]
+
+
+# ---------------------------------------------------------------------------
+# PATCH /documents/{doc_id}
+# ---------------------------------------------------------------------------
+
+class ToggleDocumentStatus(BaseModel):
+    active: bool
+
+
+class ToggleDocumentResponse(BaseModel):
+    doc_id:          str
+    active:          bool
+    affected_chunks: int
