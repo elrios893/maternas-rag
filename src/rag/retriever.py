@@ -1,19 +1,27 @@
 """
-retriever.py — Capa de recuperación RAG híbrida.
+retriever_configC.py — CONFIG C: FAISS+BM25 + corpus MaternaQA-es LM.
 
-Estrategia:
-  - Búsqueda DENSA (FAISS): sobre textbook, medmcqa, medqa_*
-    Semántica — captura sinónimos y paráfrasis.
-  - Búsqueda LÉXICA (BM25): sobre multiclinsum_summary y multiclinsum_fulltext
-    Exacta — solo retorna casos clínicos si hay coincidencia real de términos.
-    Evita que casos irrelevantes contaminen el contexto del LLM.
+Igual que Config B (hibrido FAISS+BM25) pero con maternaqaes_lm
+incluido en la capa densa (2.223 chunks de obstetricia en espanol).
 
-Resultado final: top-5 densa + top-2 BM25 (solo si score >= umbral).
-Los fragmentos se numeran en orden: primero los densos, luego los BM25.
+Diferencias respecto a Config B:
+  - DENSE_SOURCES incluye "maternaqaes_lm"
+  - Los chunks de obstetricia ES compiten en el ranking semantico
+    junto con textbook/medmcqa/medqa_*
+  - El retrieval puede ahora recuperar fragmentos exactos de las
+    GPCs colombianas, manuales y articulos de obstetricia que
+    son la fuente del dataset MaternaQA-es
 
-Uso:
-    from src.rag.retriever import retrieve
-    docs = retrieve("síntomas de preeclampsia", k=5)
+PARA ACTIVAR CONFIG C:
+    copy src\\rag\\retriever_configC.py src\\rag\\retriever.py
+
+PARA RESTAURAR CONFIG B:
+    copy src\\rag\\retriever_configB.py src\\rag\\retriever.py
+
+Prerequisito: haber ejecutado la ingestion del corpus LM:
+    python -m src.ingestion.ingest_maternaqaes_lm
+
+Ver foragents/retrieval_arquitecturas_configs.md y qa_technical Q27.
 """
 
 from __future__ import annotations
@@ -30,8 +38,15 @@ from src.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Fuentes que usa la búsqueda densa (excluye Multiclinsum)
-DENSE_SOURCES = {"textbook", "medmcqa", "medqa_us", "medqa_taiwan", "medqa_mainland"}
+# Config C: incluye maternaqaes_lm en la capa densa
+DENSE_SOURCES = {
+    "textbook",
+    "medmcqa",
+    "medqa_us",
+    "medqa_taiwan",
+    "medqa_mainland",
+    "maternaqaes_lm",   # <-- nuevo en Config C
+}
 MULTICLINSUM_SOURCES = {"multiclinsum_summary", "multiclinsum_fulltext"}
 
 # ---------------------------------------------------------------------------
@@ -44,9 +59,9 @@ _store: FAISSStore | None = None
 def _get_store() -> FAISSStore:
     global _store
     if _store is None:
-        logger.info("[Retriever] Cargando índice FAISS...")
+        logger.info("[Retriever] Cargando indice FAISS...")
         _store = FAISSStore.load()
-        logger.info(f"[Retriever] Índice listo: {_store.total:,} vectores")
+        logger.info(f"[Retriever] Indice listo: {_store.total:,} vectores")
     return _store
 
 
@@ -55,13 +70,14 @@ def _get_store() -> FAISSStore:
 # ---------------------------------------------------------------------------
 
 SOURCE_LABELS = {
-    "multiclinsum_summary":  "Caso clínico real en español",
-    "multiclinsum_fulltext": "Caso clínico real en español",
-    "medmcqa":               "Pregunta médica con explicación",
-    "medqa_us":              "Pregunta de examen médico (inglés)",
-    "medqa_taiwan":          "Pregunta de examen médico (chino tradicional)",
-    "medqa_mainland":        "Pregunta de examen médico (chino simplificado)",
+    "multiclinsum_summary":  "Caso clinico real en espanol",
+    "multiclinsum_fulltext": "Caso clinico real en espanol",
+    "medmcqa":               "Pregunta medica con explicacion",
+    "medqa_us":              "Pregunta de examen medico (ingles)",
+    "medqa_taiwan":          "Pregunta de examen medico (chino tradicional)",
+    "medqa_mainland":        "Pregunta de examen medico (chino simplificado)",
     "textbook":              "Textbook de medicina",
+    "maternaqaes_lm":        "Documento clinico obstetrico en espanol",
 }
 
 
@@ -70,19 +86,12 @@ def source_label(source_dataset: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Búsqueda densa — FAISS solo sobre fuentes no-Multiclinsum
+# Busqueda densa — FAISS sobre DENSE_SOURCES (incluye maternaqaes_lm)
 # ---------------------------------------------------------------------------
 
 def _retrieve_dense(query: str, k: int) -> list[dict[str, Any]]:
-    """
-    Recupera los k fragmentos más relevantes usando FAISS.
-    Filtra en post-proceso para excluir Multiclinsum.
-    Pide k*4 a FAISS para tener margen de filtrado.
-    """
     store = _get_store()
-    # Pedimos bastante más para poder filtrar Multiclinsum y quedarnos con k.
-    # Multiclinsum ocupa ~14% del índice; con k*10 hay margen suficiente
-    # incluso en consultas donde Multiclinsum domina las primeras posiciones.
+    # k*10 para filtrar Multiclinsum (~14% del indice) y garantizar k utiles
     candidates = store.search(query, k=k * 10)
 
     results = []
@@ -93,31 +102,27 @@ def _retrieve_dense(query: str, k: int) -> list[dict[str, Any]]:
             if len(results) >= k:
                 break
 
-    logger.info(f"[Retriever:dense] {len(results)}/{k} fragmentos (fuentes: textbook/medqa/medmcqa)")
+    logger.info(f"[Retriever:dense] {len(results)}/{k} fragmentos")
     return results
 
 
 # ---------------------------------------------------------------------------
-# Búsqueda léxica — BM25 solo sobre Multiclinsum
+# Busqueda lexica — BM25 solo sobre Multiclinsum
 # ---------------------------------------------------------------------------
 
 def _retrieve_bm25(query: str, k: int) -> list[dict[str, Any]]:
-    """
-    Busca en Multiclinsum usando BM25.
-    Solo retorna fragmentos con coincidencia léxica real.
-    """
     try:
         from src.rag.bm25_index import search_bm25
         results = search_bm25(query, k=k, min_score=0.5)
-        logger.info(f"[Retriever:bm25] {len(results)} fragmentos de Multiclinsum con match léxico")
+        logger.info(f"[Retriever:bm25] {len(results)} fragmentos Multiclinsum")
         return results
     except Exception as e:
-        logger.warning(f"[Retriever:bm25] Error en búsqueda BM25: {e}")
+        logger.warning(f"[Retriever:bm25] Error: {e}")
         return []
 
 
 # ---------------------------------------------------------------------------
-# Función pública
+# Funcion publica
 # ---------------------------------------------------------------------------
 
 def retrieve(
@@ -126,27 +131,17 @@ def retrieve(
     k_bm25: int = 2,
 ) -> list[dict[str, Any]]:
     """
-    Recupera fragmentos relevantes usando búsqueda híbrida.
-
-    Args:
-        query:  Pregunta del usuario.
-        k:      Fragmentos densos a recuperar (default: settings.rag_top_k = 5).
-        k_bm25: Fragmentos BM25 de Multiclinsum (default: 2, solo si hay match).
-
-    Returns:
-        Lista combinada: primero fragmentos densos, luego BM25 si los hay.
-        Máximo k + k_bm25 fragmentos.
+    Config C: top-k densa (textbook + medmcqa + medqa_* + maternaqaes_lm)
+    + top-2 BM25 (Multiclinsum, solo si hay match lexico).
     """
     if not query or not query.strip():
         return []
-
     if k is None:
         k = settings.rag_top_k
 
     dense_results = _retrieve_dense(query, k=k)
     bm25_results  = _retrieve_bm25(query, k=k_bm25)
 
-    # Merge: densos primero, BM25 al final (máx k+k_bm25 total)
     combined = dense_results + bm25_results
     logger.info(
         f"[Retriever] Total: {len(dense_results)} densos + "
@@ -160,10 +155,6 @@ def retrieve(
 # ---------------------------------------------------------------------------
 
 def format_context(docs: list[dict[str, Any]], max_chars: int = 4000) -> str:
-    """
-    Convierte la lista de docs en bloque de contexto para el prompt.
-    Cada fragmento va numerado — el LLM puede citar [n] inline.
-    """
     if not docs:
         return "No se encontraron fragmentos relevantes en la base de conocimiento."
 
@@ -173,7 +164,7 @@ def format_context(docs: list[dict[str, Any]], max_chars: int = 4000) -> str:
     for i, doc in enumerate(docs, 1):
         text = doc.get("text", "").strip()
         retrieval_type = doc.get("retrieval", "dense")
-        tag = " [caso clínico]" if retrieval_type == "bm25" else ""
+        tag = " [caso clinico]" if retrieval_type == "bm25" else ""
         fragment = f"--- Fragmento [{i}]{tag} ---\n{text}"
 
         if total_chars + len(fragment) > max_chars:
