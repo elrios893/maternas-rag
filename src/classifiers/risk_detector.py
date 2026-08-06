@@ -197,6 +197,11 @@ Señales que SIEMPRE son HIGH:
 hemorragia activa, convulsiones, ausencia de movimiento fetal, visión borrosa + cefalea + edema,
 dolor abdominal agudo, fiebre alta con signos de infección, ideas de autolesión.
 
+Si el mensaje incluye síntomas mencionados en turnos previos de la misma conversación,
+evalúa el CONJUNTO de síntomas como un cuadro clínico único, no cada uno por separado.
+Varios síntomas leves combinados pueden justificar un nivel de riesgo mayor al de
+cualquiera de ellos visto de forma aislada.
+
 Responde ÚNICAMENTE con un JSON válido:
 {
   "level": "low"|"medium"|"high",
@@ -208,6 +213,19 @@ Responde ÚNICAMENTE con un JSON válido:
 No agregues texto antes ni después del JSON.\
 """
 
+# Cuántos turnos previos de la usuaria se incluyen al evaluar riesgo.
+# Acota el crecimiento del prompt en conversaciones largas.
+RISK_HISTORY_USER_TURNS = 5
+
+
+def _extract_recent_user_text(history: Optional[list[dict]], limit: int = RISK_HISTORY_USER_TURNS) -> str:
+    """Concatena los últimos mensajes de la usuaria (rol 'user') en el historial."""
+    if not history:
+        return ""
+    user_msgs = [str(h.get("content", "")).strip() for h in history if h.get("role") == "user"]
+    user_msgs = [m for m in user_msgs if m]
+    return " ".join(user_msgs[-limit:])
+
 _groq_client: Optional[Groq] = None
 
 
@@ -218,15 +236,24 @@ def _get_client() -> Groq:
     return _groq_client
 
 
-def _llm_risk(message: str) -> RiskResult:
-    """Evalúa riesgo usando el LLM de Groq."""
+def _llm_risk(message: str, history: Optional[list[dict]] = None) -> RiskResult:
+    """Evalúa riesgo usando el LLM de Groq, considerando síntomas de turnos previos."""
     client = _get_client()
+    user_content = message.strip()
+    prior_user_text = _extract_recent_user_text(history)
+    if prior_user_text:
+        user_content = (
+            f"Mensajes previos de la paciente en esta conversación: {prior_user_text}\n\n"
+            f"Mensaje actual: {message.strip()}\n\n"
+            "Evalúa el riesgo considerando el conjunto de síntomas mencionados en toda "
+            "la conversación, no solo el mensaje actual."
+        )
     try:
         response = client.chat.completions.create(
             model=settings.groq_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": message.strip()},
+                {"role": "user",   "content": user_content},
             ],
             temperature=0.0,
             max_tokens=200,
@@ -285,6 +312,7 @@ def _action_for_level(level: str) -> str:
 def detect_risk(
     message: str,
     intent: Optional[str] = None,
+    history: Optional[list[dict]] = None,
 ) -> RiskResult:
     """
     Detecta el nivel de riesgo clínico del mensaje.
@@ -292,10 +320,16 @@ def detect_risk(
     Primero aplica la capa heurística (instantánea). Si no detecta nada,
     escala al LLM para evaluación contextual.
 
+    Cuando se provee `history`, los síntomas mencionados en turnos anteriores
+    de la misma conversación (p. ej. durante un intercambio de clarificación)
+    se combinan con el mensaje actual, para no evaluar cada síntoma aislado
+    del resto del cuadro clínico.
+
     Args:
         message: Texto del usuario.
         intent:  Intención ya clasificada (opcional). Si es
                  'pregunta_fuera_de_alcance', retorna LOW directamente.
+        history: Turnos previos [{"role": "user"|"assistant", "content": "..."}].
 
     Returns:
         RiskResult con level, flags, action y reasoning.
@@ -313,10 +347,12 @@ def detect_risk(
             reasoning="Pregunta fuera del dominio de salud materna.",
         )
 
-    # Capa 1: heurística rápida
-    heuristic_result = _check_heuristic(message)
+    # Capa 1: heurística rápida — combina síntomas de turnos previos + mensaje actual
+    prior_user_text = _extract_recent_user_text(history)
+    combined_message = f"{prior_user_text} {message.strip()}" if prior_user_text else message
+    heuristic_result = _check_heuristic(combined_message)
     if heuristic_result is not None:
         return heuristic_result
 
     # Capa 2: LLM para evaluación contextual
-    return _llm_risk(message)
+    return _llm_risk(message, history=history)

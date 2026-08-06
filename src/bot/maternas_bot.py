@@ -72,16 +72,6 @@ async def call_chat(message: str, user_id: int) -> dict | None:
     return None
 
 # ---------------------------------------------------------------------------
-# Risk indicators
-# ---------------------------------------------------------------------------
-
-def risk_emoji(level: str) -> str:
-    return {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(level, "⚪")
-
-def risk_label(level: str) -> str:
-    return {"low": "Riesgo Bajo", "medium": "Riesgo Medio", "high": "🚨 RIESGO ALTO 🚨"}.get(level, level)
-
-# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -162,44 +152,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    answer             = result.get("answer", "No se pudo generar una respuesta.")
-    level              = result.get("risk_level", "low")
-    intent             = result.get("intent", "")
-    action             = result.get("action", "")
-    flags              = result.get("risk_flags", [])
-    needs_clarification = result.get("needs_clarification", False)
+    answer               = result.get("answer", "No se pudo generar una respuesta.")
+    needs_clarification  = result.get("needs_clarification", False)
 
-    # Si el sistema pide clarificación, no guardamos en historial todavía
-    # — esperamos la respuesta del usuario al siguiente mensaje
-    if not needs_clarification:
-        if user_id not in histories:
-            histories[user_id] = []
-        histories[user_id].append({"role": "user",      "content": text})
-        histories[user_id].append({"role": "assistant", "content": answer})
+    # Siempre guardamos en el historial, incluso durante clarificación — de lo
+    # contrario el sistema pierde de vista los síntomas mencionados antes de
+    # que la usuaria responda la pregunta de clarificación.
+    if user_id not in histories:
+        histories[user_id] = []
+    histories[user_id].append({"role": "user",      "content": text})
+    histories[user_id].append({"role": "assistant", "content": answer})
 
-    # Caso clarificación — mensaje especial sin header de riesgo
     if needs_clarification:
-        await update.message.reply_text(
-            f"💬 {answer}"
-        )
+        await update.message.reply_text(f"💬 {answer}")
         return
 
-    # Armar header de riesgo
-    if level == "high":
-        header = (
-            f"🚨 <b>🚨 RIESGO ALTO — BUSCA ATENCIÓN MÉDICA INMEDIATA 🚨</b>\n\n"
-            f"<b>Señales detectadas:</b> {', '.join(flags)}\n"
-            f"<b>Acción recomendada:</b> {action}\n\n"
-        )
-    elif level == "medium":
-        header = f"{risk_emoji(level)} <b>{risk_label(level)}</b>\n"
-        if flags:
-            header += f"<b>Detectado:</b> {', '.join(flags)}\n"
-        header += "<b>Recomendación:</b> consulta a tu médico en los próximos días.\n\n"
-    else:
-        header = f"{risk_emoji(level)} <b>{risk_label(level)}</b>\n\n"
-
-    await update.message.reply_text(header, parse_mode=constants.ParseMode.HTML)
     await update.message.reply_text(answer[:4000])
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

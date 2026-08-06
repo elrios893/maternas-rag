@@ -189,8 +189,10 @@ with st.sidebar:
             for s in m["sources"]:
                 label = source_dataset_label(s.get("source_dataset",""))
                 score = s.get("score", 0)
+                path  = s.get("source_path", "")
+                pill_text = f"{label} · {score:.3f}" + (f" · {path}" if path else "")
                 st.markdown(
-                    f'<span class="source-pill">{label} · {score:.3f}</span>',
+                    f'<span class="source-pill">{pill_text}</span>',
                     unsafe_allow_html=True,
                 )
 

@@ -38,7 +38,7 @@ from groq import Groq
 
 from src.classifiers.intent_classifier import classify_intent, IntentResult
 from src.classifiers.risk_detector import detect_risk, RiskResult
-from src.rag.retriever import retrieve, format_context, source_label
+from src.rag.retriever import retrieve, format_context, source_label, source_path
 from src.settings import settings
 from src.skills import ToolRegistry
 import src.skills.notifier  # noqa: F401 — registra tools del notifier
@@ -162,13 +162,22 @@ CLARIFICATION_RULES: dict[str, dict] = {
 }
 
 
-def _should_clarify(query: str, intent: str, risk_level: str) -> bool:
+def _should_clarify(
+    query: str,
+    intent: str,
+    risk_level: str,
+    history: list[dict] | None = None,
+) -> bool:
     """
     Determina si se debe pedir clarificación antes de responder.
 
     Reglas:
     - Nunca clarificar si risk != low (urgente o medio → responder siempre)
     - Nunca clarificar para intents en NEVER_CLARIFY
+    - Nunca clarificar si ya hay historial en esta conversación — ya se pidió
+      contexto antes (o la usuaria ya viene contando algo); preguntar de nuevo
+      en cada turno corto hace que el sistema pierda de vista los síntomas
+      previos en vez de acumularlos.
     - Nunca clarificar si la query ya es larga (≥ 20 tokens) — tiene suficiente contexto
     - Clarificar si el intent está en CLARIFICATION_RULES Y la query es corta
       Y no menciona ninguna keyword de contexto esperada
@@ -176,6 +185,8 @@ def _should_clarify(query: str, intent: str, risk_level: str) -> bool:
     if risk_level != "low":
         return False
     if intent in NEVER_CLARIFY:
+        return False
+    if history:
         return False
 
     rule = CLARIFICATION_RULES.get(intent)
@@ -323,14 +334,14 @@ def chat(
     intent_result: IntentResult = classify_intent(query, conversation_history=history)
     logger.info(f"[Chain] intent={intent_result.intent} conf={intent_result.confidence:.2f}")
 
-    # 2. Detectar riesgo
-    risk_result: RiskResult = detect_risk(query, intent=intent_result.intent)
+    # 2. Detectar riesgo (combina síntomas de turnos previos con el mensaje actual)
+    risk_result: RiskResult = detect_risk(query, intent=intent_result.intent, history=history)
     logger.info(f"[Chain] risk={risk_result.level} action={risk_result.action}")
 
     # ---------------------------------------------------------------------------
     # 2b. Clarificación — pedir más contexto si la query es vaga
     # ---------------------------------------------------------------------------
-    if _should_clarify(query, intent_result.intent, risk_result.level):
+    if _should_clarify(query, intent_result.intent, risk_result.level, history):
         clarification_q = _generate_clarification(query, intent_result.intent, risk_result.level)
         logger.info(f"[Chain] Clarificacion activada para intent={intent_result.intent}")
         return ChatResponse(
@@ -414,7 +425,7 @@ def chat(
             for i, doc in enumerate(docs, 1):
                 if i in cited:
                     source = doc.get("source_dataset", "desconocido")
-                    refs.append(f"[{i}] {source_label(source)}")
+                    refs.append(f"[{i}] {source_label(source)} — {source_path(doc)}")
             if refs:
                 answer += "\n\n---\n" + "\n".join(refs)
 

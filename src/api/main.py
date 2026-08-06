@@ -36,7 +36,7 @@ from src.api.schemas import (
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
 from src.rag.chain import chat as rag_chat
-from src.rag.retriever import _get_store
+from src.rag.retriever import _get_store, source_path
 from src.settings import settings
 
 logging.basicConfig(
@@ -139,6 +139,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             language=s.get("language", ""),
             doc_id=s.get("doc_id"),
             chunk_id=s.get("chunk_id"),
+            source_path=source_path(s),
         ))
 
     return ChatResponse(
@@ -169,7 +170,7 @@ def classify(request: ClassifyRequest) -> ClassifyResponse:
 
     try:
         intent_result = classify_intent(request.message, conversation_history=history)
-        risk_result   = detect_risk(request.message, intent=intent_result.intent)
+        risk_result   = detect_risk(request.message, intent=intent_result.intent, history=history)
     except Exception as e:
         logger.error(f"[/classify] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)[:120])

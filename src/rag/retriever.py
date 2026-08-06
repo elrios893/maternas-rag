@@ -85,6 +85,30 @@ def source_label(source_dataset: str) -> str:
     return SOURCE_LABELS.get(source_dataset, f"Fuente: {source_dataset}")
 
 
+def source_path(doc: dict[str, Any]) -> str:
+    """
+    Ruta de archivo o identificador de chunk del que se extrajo el fragmento,
+    para trazabilidad de citas. Distintos datasets guardan esto en distintas
+    keys de metadata (filename, source_pdf, doc_id, chunk_id) — se usa la
+    combinación más informativa disponible.
+    """
+    filename = doc.get("filename") or doc.get("source_pdf") or ""
+    chunk_id = doc.get("chunk_id") or ""
+    doc_id   = doc.get("doc_id") or ""
+
+    if filename and chunk_id:
+        return f"{filename} (chunk {chunk_id})"
+    if filename:
+        return filename
+    if doc_id and chunk_id:
+        return f"{doc_id}/{chunk_id}"
+    if doc_id:
+        return doc_id
+    if chunk_id:
+        return chunk_id
+    return "desconocido"
+
+
 # ---------------------------------------------------------------------------
 # Busqueda densa — FAISS sobre DENSE_SOURCES (incluye maternaqaes_lm)
 # ---------------------------------------------------------------------------

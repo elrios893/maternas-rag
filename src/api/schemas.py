@@ -36,6 +36,7 @@ class SourceDoc(BaseModel):
     language:       str
     doc_id:         Optional[str] = None
     chunk_id:       Optional[str] = None
+    source_path:    str = ""
 
 
 class ChatResponse(BaseModel):
