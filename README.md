@@ -210,3 +210,21 @@ Configuración: FAISS + BM25 híbrido + corpus obstétrico MaternaQA-es LM compl
 - **Reranker cross-encoder local** (`BAAI/bge-reranker-v2-m3`) — recuperar k=20 candidatos y reranquear a top-5 antes del LLM; mejora `context_precision` sin costo de API ni latencia significativa
 - **System prompt restrictivo** — instruir al LLM a responder solo con información de los fragmentos recuperados y declarar explícitamente cuando no tiene suficiente contexto; sube `faithfulness` en pares donde el retrieval ya es correcto
 - **HyDE (Hypothetical Document Embeddings)** — generar una respuesta hipotética antes de la búsqueda y usarla como query de embedding; mejora `context_recall` en consultas cortas alineando el vocabulario de búsqueda con el del corpus clínico
+
+---
+
+## Aviso de privacidad y uso experimental
+
+Este chatbot corresponde a un prototipo desarrollado exclusivamente con fines académicos y de investigación. La herramienta se encuentra en fase experimental y no constituye un servicio comercial, asistencial, médico, psicológico, jurídico ni profesional.
+
+La plataforma no solicita ni almacena nombres, apellidos, números de identificación, direcciones, correos electrónicos, números telefónicos ni otros datos destinados a identificar directamente a las personas usuarias.
+
+El contenido estrictamente necesario para mantener el flujo de la conversación podrá procesarse de manera temporal durante la sesión. Esta información no deberá conservarse permanentemente, utilizarse para crear perfiles personales ni emplearse para entrenar modelos de inteligencia artificial.
+
+Se recomienda a las personas usuarias no incluir nombres propios, documentos, direcciones, contraseñas, información financiera ni otros datos que permitan identificar a una persona. Cuando sea necesario utilizar información de las interacciones para fines investigativos, esta deberá ser previamente anonimizada y analizada de manera agregada.
+
+La herramienta utiliza inteligencia artificial para generar respuestas, por lo que estas pueden contener errores, imprecisiones o interpretaciones incorrectas. Las respuestas no deben utilizarse como sustituto del criterio de un profesional competente.
+
+Antes de implementar este agente en un ambiente productivo, comercial, institucional o abierto al público, la organización responsable deberá realizar una revisión jurídica, ética, técnica y de seguridad. Esta revisión deberá incluir las políticas de tratamiento de datos personales y sensibles, los avisos de privacidad, los mecanismos de autorización, los periodos de conservación, los proveedores tecnológicos involucrados y los procedimientos para atender incidentes y ejercer los derechos de los titulares.
+
+La revisión deberá ser realizada o acompañada por el responsable jurídico, el encargado de protección de datos y, cuando corresponda, el comité de ética de la institución.
