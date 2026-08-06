@@ -52,6 +52,19 @@ class Settings(BaseSettings):
     notifier_smtp_user: str = Field("", env="NOTIFIER_SMTP_USER")
     notifier_smtp_password: str = Field("", env="NOTIFIER_SMTP_PASSWORD")
 
+    # --- Status Check Scheduler (integrado en maternas_bot.py via JobQueue) ---
+    # Frecuencia de los mensajes automaticos de seguimiento, segun el nivel
+    # de riesgo acumulado del usuario. Valores por defecto pensados para
+    # desarrollo/pruebas — en produccion usar minutos u horas (ver .env.example).
+    status_check_interval_low_seconds: float = Field(60.0, env="STATUS_CHECK_INTERVAL_LOW_SECONDS")
+    status_check_interval_medium_seconds: float = Field(45.0, env="STATUS_CHECK_INTERVAL_MEDIUM_SECONDS")
+    status_check_interval_high_seconds: float = Field(30.0, env="STATUS_CHECK_INTERVAL_HIGH_SECONDS")
+    status_check_message: str = Field(
+        "🩺 *Check de estado* — ¿Cómo te encuentras hoy? "
+        "Cuéntame cualquier molestia o duda que tengas.",
+        env="STATUS_CHECK_MESSAGE",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

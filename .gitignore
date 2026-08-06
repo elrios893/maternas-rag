@@ -33,3 +33,6 @@ __MACOSX/
 
 # Carpeta local no versionada (informes, documentos internos)
 no_repo/
+
+# Registro de usuarios activos del bot (datos clinicos reales — nunca versionar)
+active_users.json

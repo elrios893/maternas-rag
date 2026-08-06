@@ -68,11 +68,30 @@ El bot permite chatear con Maternas directamente desde Telegram usando polling.
 python src/bot/maternas_bot.py   # Terminal 3 (requiere API ya corriendo)
 ```
 
-Comandos: `/start` — bienvenida · `/help` — instrucciones · `/reset` — reinicia historial · `/stats` — estadísticas del bot.
+Comandos: `/start` — bienvenida · `/help` — instrucciones · `/reset` — reinicia historial y da de baja del scheduler · `/stats` — estadísticas del bot.
 
-Historial conversacional en RAM por usuario. Mensajes separados: header informativo (HTML) + respuesta de Maternas (texto plano) para evitar errores de parseo.
+Historial conversacional en RAM por usuario, persistido siempre (incluso durante una pregunta de clarificación) para no perder el contexto de síntomas entre turnos. La respuesta de Maternas se envía como texto plano.
 
 El token se configura en `.env` como `TELEGRAM_BOT_TOKEN`.
+
+### Status Check Scheduler
+
+El mismo proceso del bot envía mensajes automáticos de seguimiento a cada
+usuario que le haya escrito ("¿cómo te encuentras hoy?"), con una frecuencia
+que depende de su nivel de riesgo acumulado — usa la `JobQueue` nativa de
+`python-telegram-bot` (basada en APScheduler), sin proceso ni terminal aparte.
+
+- `src/bot/active_users.py` — registro persistido en `active_users.json`
+  (raíz del proyecto, **no versionado** — contiene datos clínicos reales).
+  Cada usuario acumula `risk_points` (`low=0, medium=+3, high=+10`, tope 50,
+  decae 1 punto por hora de inactividad).
+- Cada 15s el bot sincroniza un job de `JobQueue` por usuario según su
+  `risk_points` actual: `LOW` → `STATUS_CHECK_INTERVAL_LOW_SECONDS` (60s dev),
+  `MEDIUM` → `..._MEDIUM_SECONDS` (45s), `HIGH` → `..._HIGH_SECONDS` (30s).
+  En producción se sugiere subir a minutos/horas (ver `.env.example`).
+- Los checks solo se envían si la API respondió OK en el último turno del
+  bot (congruencia — nunca manda mensajes automáticos si el sistema está caído).
+- `/reset` da de baja al usuario del registro, deteniendo sus check-ins.
 
 ## Flujo por turno
 
