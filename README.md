@@ -213,18 +213,21 @@ Configuración: FAISS + BM25 híbrido + corpus obstétrico MaternaQA-es LM compl
 
 ---
 
-## Aviso de privacidad y uso experimental
+## Advertencia de uso y puesta en producción
 
-Este chatbot corresponde a un prototipo desarrollado exclusivamente con fines académicos y de investigación. La herramienta se encuentra en fase experimental y no constituye un servicio comercial, asistencial, médico, psicológico, jurídico ni profesional.
+Este software corresponde a un prototipo desarrollado con fines de investigación. Su disponibilidad en un repositorio, ambiente de demostración o prueba piloto no implica que se encuentre autorizado para operar como servicio productivo, comercial, clínico, psicológico, educativo o institucional.
 
-La plataforma no solicita ni almacena nombres, apellidos, números de identificación, direcciones, correos electrónicos, números telefónicos ni otros datos destinados a identificar directamente a las personas usuarias.
+Antes de su puesta en producción, la organización responsable deberá realizar una revisión jurídica, ética, técnica y de seguridad que incluya, como mínimo:
 
-El contenido estrictamente necesario para mantener el flujo de la conversación podrá procesarse de manera temporal durante la sesión. Esta información no deberá conservarse permanentemente, utilizarse para crear perfiles personales ni emplearse para entrenar modelos de inteligencia artificial.
+* Política de tratamiento de datos personales.
+* Aviso de privacidad y mecanismos de autorización.
+* Tratamiento especial de datos sensibles.
+* Evaluación de impacto en privacidad.
+* Plazos de conservación y eliminación.
+* Gestión de derechos de los titulares.
+* Revisión de transferencias y transmisiones nacionales o internacionales.
+* Contratos con proveedores de inteligencia artificial, alojamiento, mensajería y analítica.
+* Controles de acceso, cifrado, registros y respuesta a incidentes.
+* Revisión y aprobación por las instancias jurídicas y éticas que correspondan.
 
-Se recomienda a las personas usuarias no incluir nombres propios, documentos, direcciones, contraseñas, información financiera ni otros datos que permitan identificar a una persona. Cuando sea necesario utilizar información de las interacciones para fines investigativos, esta deberá ser previamente anonimizada y analizada de manera agregada.
-
-La herramienta utiliza inteligencia artificial para generar respuestas, por lo que estas pueden contener errores, imprecisiones o interpretaciones incorrectas. Las respuestas no deben utilizarse como sustituto del criterio de un profesional competente.
-
-Antes de implementar este agente en un ambiente productivo, comercial, institucional o abierto al público, la organización responsable deberá realizar una revisión jurídica, ética, técnica y de seguridad. Esta revisión deberá incluir las políticas de tratamiento de datos personales y sensibles, los avisos de privacidad, los mecanismos de autorización, los periodos de conservación, los proveedores tecnológicos involucrados y los procedimientos para atender incidentes y ejercer los derechos de los titulares.
-
-La revisión deberá ser realizada o acompañada por el responsable jurídico, el encargado de protección de datos y, cuando corresponda, el comité de ética de la institución.
+Los responsables de una implementación productiva deberán verificar el cumplimiento de la legislación vigente en la jurisdicción en la que se utilice la herramienta.
