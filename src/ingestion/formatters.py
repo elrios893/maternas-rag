@@ -13,6 +13,7 @@ No hay chunking aquí — ese es trabajo de chunkers.py.
 from dataclasses import dataclass, field
 from typing import Optional
 import uuid
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +251,27 @@ def format_textbook(filename: str, text: str) -> Document:
         "doc_id":         book_name,
         "subject":        book_name,
         "language":       "en",
+        "filename":       filename,
+    }
+
+    return Document(text=_clean(text), metadata=metadata)
+
+
+# ---------------------------------------------------------------------------
+# Formatter 8: Upload (panel de administración)
+# ---------------------------------------------------------------------------
+# Documentos .txt subidos desde la UI. Se indexan con recursive split
+# (misma estrategia que los textbooks) y se distinguen del resto de
+# fuentes mediante source_dataset="upload".
+
+def format_upload(filename: str, text: str) -> Document:
+    """Formatea un documento .txt subido desde el panel de administración."""
+    doc_id = Path(filename).stem
+
+    metadata = {
+        "source_dataset": "upload",
+        "doc_id":         doc_id,
+        "language":       "es",
         "filename":       filename,
     }
 

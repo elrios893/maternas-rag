@@ -11,6 +11,7 @@ starlette==0.41.3
 pydantic==2.10.3
 pydantic-settings==2.14.1
 python-dotenv==1.0.1
+python-multipart==0.0.32
 
 # --- LangChain ---
 langchain==0.3.13

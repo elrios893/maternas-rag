@@ -23,7 +23,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.schemas import (
@@ -39,10 +39,13 @@ from src.api.schemas import (
     SourceDoc,
     ToggleDocumentStatus,
     ToggleDocumentResponse,
+    UploadDocumentResponse,
     TYPED_CHUNK_FIELDS,
 )
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
+from src.ingestion.chunkers import chunk_document
+from src.ingestion.formatters import format_upload
 from src.rag.chain import chat as rag_chat
 from src.rag.retriever import _get_store
 from src.settings import settings
@@ -52,6 +55,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Límite máximo para archivos subidos al panel de administración
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +308,7 @@ def get_document_detail(doc_id: str) -> DocumentDetailResponse:
     total_chars = 0
 
     for entry in store.metadata.values():
-        if entry.get("doc_id") != doc_id:
+        if entry.get("doc_id", "").lower() != doc_id.lower():
             continue
         total_chars += len(entry.get("text", ""))
         chunks.append(entry)
@@ -315,7 +321,7 @@ def get_document_detail(doc_id: str) -> DocumentDetailResponse:
     first = chunks[0]
 
     return DocumentDetailResponse(
-        doc_id=doc_id,
+        doc_id=first.get("doc_id", doc_id),
         source_dataset=first.get("source_dataset", ""),
         language=first.get("language", ""),
         chunk_count=len(chunks),
@@ -357,18 +363,88 @@ def toggle_document_status(doc_id: str, body: ToggleDocumentStatus) -> ToggleDoc
         logger.exception("Error al acceder al índice FAISS para PATCH /documents/{doc_id}")
         raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
 
-    affected = store.update_document_status(doc_id, active=body.active)
+    canonical = next(
+        (
+            entry.get("doc_id")
+            for entry in store.metadata.values()
+            if entry.get("doc_id", "").lower() == doc_id.lower()
+        ),
+        None,
+    )
 
-    if affected == 0:
+    if canonical is None:
         raise HTTPException(
             status_code=404,
             detail=f"Documento '{doc_id}' no encontrado",
         )
 
+    affected = store.update_document_status(canonical, active=body.active)
+
     store.save_metadata()
 
     return ToggleDocumentResponse(
-        doc_id=doc_id,
+        doc_id=canonical,
         active=body.active,
         affected_chunks=affected,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/upload
+# ---------------------------------------------------------------------------
+
+@app.post("/documents/upload", response_model=UploadDocumentResponse, tags=["documentos"])
+def upload_document(file: UploadFile = File(...)) -> UploadDocumentResponse:
+    """Sube y indexa un documento .txt en la base de conocimiento."""
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Solo se admiten archivos .txt")
+
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="El archivo supera el límite de 10 MB")
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("latin-1")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="El archivo no se pudo decodificar como texto")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+    try:
+        store = _get_store()
+    except Exception:
+        logger.exception("Error al acceder al índice FAISS para POST /documents/upload")
+        raise HTTPException(status_code=503, detail="Servicio de documentos no disponible")
+
+    doc_id = Path(filename).stem
+    if any(
+        entry.get("doc_id", "").lower() == doc_id.lower()
+        for entry in store.metadata.values()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe un documento con doc_id '{doc_id}'",
+        )
+
+    doc    = format_upload(filename, text)
+    chunks = chunk_document(doc)
+
+    try:
+        added = store.add_documents(chunks)
+        store.save()
+    except Exception:
+        logger.exception("Error al indexar el documento subido")
+        raise HTTPException(status_code=500, detail="Error al indexar el documento")
+
+    return UploadDocumentResponse(
+        filename=filename,
+        doc_id=doc_id,
+        chunks_created=added,
+        total_vectors=store.total,
     )

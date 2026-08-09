@@ -155,3 +155,14 @@ class ToggleDocumentResponse(BaseModel):
     doc_id:          str
     active:          bool
     affected_chunks: int
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/upload
+# ---------------------------------------------------------------------------
+
+class UploadDocumentResponse(BaseModel):
+    filename:       str
+    doc_id:         str
+    chunks_created: int
+    total_vectors:  int

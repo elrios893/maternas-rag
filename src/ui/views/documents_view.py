@@ -2,6 +2,7 @@
 documents_view.py — Vista del Centro de Gestión Documental del RAG.
 """
 
+import math
 import streamlit as st
 import httpx
 
@@ -10,6 +11,7 @@ from src.ui.client import (
     get_document_stats,
     list_documents,
     toggle_document_status,
+    upload_document,
 )
 
 
@@ -42,7 +44,9 @@ def _load_document_data() -> None:
 def _fetch_documents(search: str = "", page: int = 1) -> None:
     with st.spinner("Buscando documentos..."):
         try:
+            stats = get_document_stats()
             resp = list_documents(search=search, page=page, per_page=20)
+            st.session_state.doc_stats = stats
             st.session_state.documents = resp.get("documents", [])
             st.session_state.doc_total = resp.get("total", 0)
             st.session_state.doc_page = page
@@ -51,6 +55,25 @@ def _fetch_documents(search: str = "", page: int = 1) -> None:
             st.session_state.documents = []
             st.session_state.doc_total = 0
             st.session_state.doc_page = 1
+
+
+def _upload_error_message(exc: httpx.HTTPStatusError) -> str:
+    """Convierte un error HTTP del upload en un mensaje legible."""
+    try:
+        detail = exc.response.json().get("detail", "")
+    except ValueError:
+        detail = ""
+    status = exc.response.status_code
+
+    if status == 400:
+        return f"Archivo inválido: {detail or 'extensión, codificación o contenido no permitidos'}"
+    if status == 409:
+        return f"Documento duplicado: {detail or 'ya existe un documento con ese nombre'}"
+    if status == 413:
+        return f"Archivo demasiado grande: {detail or 'máximo 10 MB'}"
+    if status == 500:
+        return f"Error al indexar el documento: {detail or 'intenta de nuevo'}"
+    return f"Error del servidor ({status}): {detail or 'respuesta desconocida'}"
 
 
 def _render_document_card(doc: dict) -> None:
@@ -210,6 +233,34 @@ def render_documents() -> None:
     st.write("")
 
     # ------------------------------------------------------------------
+    # Carga de documentos
+    # ------------------------------------------------------------------
+    with st.expander("📤 Cargar nuevo documento", expanded=False):
+        uploaded_file = st.file_uploader(
+            "Seleccionar archivo .txt",
+            type=["txt"],
+            key="doc_uploader",
+        )
+        if uploaded_file is not None:
+            if st.button("Subir e indexar", use_container_width=True):
+                with st.spinner("Procesando documento..."):
+                    try:
+                        resp = upload_document(uploaded_file.name, uploaded_file.read())
+                    except httpx.HTTPStatusError as exc:
+                        st.error(_upload_error_message(exc))
+                    except httpx.HTTPError:
+                        st.error("No se pudo conectar con la API. Verifica que el servidor esté disponible.")
+                    else:
+                        st.success(
+                            f"Documento indexado: **{resp.get('doc_id')}** — "
+                            f"{resp.get('chunks_created')} fragmentos creados."
+                        )
+                        st.session_state.doc_loaded = False
+                        st.rerun()
+
+    st.write("")
+
+    # ------------------------------------------------------------------
     # Barra de herramientas: búsqueda + actualizar
     # ------------------------------------------------------------------
     col_search, col_btn = st.columns([4, 1])
@@ -269,7 +320,8 @@ def render_documents() -> None:
                     )
 
             with col_cur:
-                st.caption(f"Página {doc_page}")
+                total_pages = max(1, math.ceil(doc_total / 20))
+                st.caption(f"Página {doc_page} de {total_pages}")
 
             with col_next:
                 if st.button("Siguiente ▶", disabled=doc_page * 20 >= doc_total, use_container_width=True):

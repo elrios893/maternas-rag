@@ -176,7 +176,7 @@ def chunk_document(doc: Document) -> List[Document]:
     if source == "multiclinsum_fulltext":
         return chunk_paragraph_grouping(doc)
 
-    if source == "textbook":
+    if source in ("textbook", "upload"):
         return chunk_recursive_split(doc)
 
     # Fallback: si llega un source desconocido, no chunking

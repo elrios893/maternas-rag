@@ -232,6 +232,9 @@ class FAISSStore:
     def update_document_status(self, doc_id: str, active: bool) -> int:
         """Activa o desactiva todos los chunks de un documento.
 
+        La comparación de doc_id es case-insensitive; el valor canónico
+        almacenado no se modifica.
+
         Args:
             doc_id: Identificador del documento.
             active: Nuevo estado (True=activo, False=inactivo).
@@ -241,7 +244,7 @@ class FAISSStore:
         """
         affected = 0
         for entry in self.metadata.values():
-            if entry.get("doc_id") != doc_id:
+            if entry.get("doc_id", "").lower() != doc_id.lower():
                 continue
             entry["active"] = active
             affected += 1

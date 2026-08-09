@@ -57,3 +57,13 @@ def toggle_document_status(doc_id: str, active: bool) -> dict:
     )
     r.raise_for_status()
     return r.json()
+
+
+def upload_document(filename: str, content: bytes) -> dict:
+    r = httpx.post(
+        f"{API_URL}/documents/upload",
+        files={"file": (filename, content)},
+        timeout=120,
+    )
+    r.raise_for_status()
+    return r.json()
