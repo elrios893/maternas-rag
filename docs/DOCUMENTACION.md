@@ -950,7 +950,7 @@ No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el re
 
 - [ ] **Reranker cross-encoder local** (`BAAI/bge-reranker-v2-m3`) — k=20 candidatos → top-5 al LLM
 - [ ] **System prompt más restrictivo** — LLM debe declarar explícitamente "no tengo información suficiente"
-- [ ] **HyDE** (Hypothetical Document Embeddings) — mejora context_recall en queries cortas
+- [x] ~~**HyDE** (Hypothetical Document Embeddings)~~ — probado (`retriever_configE.py`), descartado: sin mejora medible sobre Config D (deltas dentro del ruido, 14 pares) y con costo real de latencia (+~1.3s/turno) y cuota Groq. Ver `foragents/qa_technical.md` Q32.
 - [ ] **Tests unitarios** para clasificadores, retriever y chain
 - [ ] **Web search skill** — fallback Tavily cuando el vector store no cubre el tema
 - [ ] **Persistencia de historial** — SQLite o Redis para el bot Telegram

@@ -1445,4 +1445,37 @@ Con la medición en mano, se removieron los vectores de forma permanente:
 
 ---
 
+## Q32: ¿Vale la pena implementar HyDE (Hypothetical Document Embeddings)?
+
+**Contexto:** El README (sección "Siguientes mejoras") sugería HyDE como posible mejora de `context_recall` en consultas cortas. Antes de adoptarlo en producción, se probó como experimento aislado (mismo método que Q31: config nueva + evaluación Ragas sobre los mismos 14-15 pares) para medir si el beneficio justifica el costo.
+
+### Implementación de prueba
+
+`src/rag/retriever_configE.py` = Config D + HyDE: antes de embeder, se le pide al LLM de producción (Groq `llama-3.3-70b-versatile`) que escriba un párrafo corto en lenguaje clínico formal respondiendo hipotéticamente la pregunta del usuario, y ese párrafo (no la query cruda) es lo que se embede y se busca en FAISS. Si la generación HyDE falla, se hace fallback silencioso a la query original.
+
+### Resultados (14 pares, seed=42, judge Cerebras gemma-4-31b)
+
+| Métrica | Config D (sin HyDE) | Config E (con HyDE) | Δ |
+|---|---:|---:|---:|
+| `faithfulness` | 0.4973 | 0.5213 | +0.024 |
+| `answer_correctness` | 0.5507 | 0.4995 | −0.051 |
+| `answer_relevancy` | 0.7328 | 0.6903 | −0.043 |
+| `context_recall` | 0.4524 | 0.4762 | +0.024 |
+| `context_precision` | 0.3599 | 0.3366 | −0.023 |
+| `latency_avg_s` | 9.58 | 10.85 | +1.27s |
+| `latency_p95_s` | 15.93 | 16.88 | +0.95s |
+
+**Conclusión: no vale la pena, al menos no en su forma actual.** Todos los deltas caen dentro del ruido estadístico de la evaluación (~0.25 std con 14-15 pares) — ninguna métrica mejora de forma clara, dos de las cinco incluso empeoran ligeramente (`answer_correctness`, `context_precision`). A cambio, el costo es real y medible:
+
+- **Latencia:** +~1.3s promedio por turno (una llamada Groq adicional antes de poder retrievar).
+- **Cuota de tokens:** el `GROQ_API_KEY` de producción **se agotó a mitad de la corrida de 15 pares** (límite diario 100k tokens, ya documentado como cuello de botella recurrente en `eval_setup_critico.md`) — algo que no había pasado con Config D en la misma muestra. El item 15 tuvo que regenerarse con `GROQ_API_KEY_2` para completar la evaluación. En producción real esto se traduce en agotar la cuota diaria del bot mucho más rápido, ya que `retrieve()` se llama más de una vez por turno (una vez dentro de `chat()`, otra vez en el pipeline de evaluación para capturar contexto — en producción normal solo la primera, pero igual duplica el uso de Groq por turno de chat vs no tener HyDE).
+
+**Decisión:** no se activa en producción. `src/rag/retriever_configD.py` sigue siendo la config activa. `src/rag/retriever_configE.py` queda en el repo como referencia si se quiere retomar (por ejemplo con un modelo más barato/rápido solo para la generación HyDE, o si se resuelve la restricción de cuota de Groq).
+
+**Archivos:**
+- `src/rag/retriever_configE.py` — nuevo, config de prueba (no activa)
+- `README.md` — sección "Siguientes mejoras" actualizada con este resultado
+
+---
+
 *Última actualización: 13 de agosto de 2026*

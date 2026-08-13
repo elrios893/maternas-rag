@@ -234,7 +234,8 @@ Remover `textbook` y `multiclinsum` no cambió las métricas de forma significat
 
 - **Reranker cross-encoder local** (`BAAI/bge-reranker-v2-m3`) — recuperar k=20 candidatos y reranquear a top-5 antes del LLM; mejora `context_precision` sin costo de API ni latencia significativa
 - **System prompt restrictivo** — instruir al LLM a responder solo con información de los fragmentos recuperados y declarar explícitamente cuando no tiene suficiente contexto; sube `faithfulness` en pares donde el retrieval ya es correcto
-- **HyDE (Hypothetical Document Embeddings)** — generar una respuesta hipotética antes de la búsqueda y usarla como query de embedding; mejora `context_recall` en consultas cortas alineando el vocabulario de búsqueda con el del corpus clínico
+
+~~**HyDE (Hypothetical Document Embeddings)**~~ — probado en `src/rag/retriever_configE.py` y evaluado contra Config D (14 pares, ver `foragents/qa_technical.md` Q32): todos los deltas de métricas caen dentro del margen de ruido de la evaluación (ninguna mejora de forma clara, dos empeoran ligeramente), mientras que el costo es real — +~1.3s de latencia por turno y agotó la cuota diaria de Groq a mitad de una corrida de solo 15 pares. **No se adoptó en producción.**
 
 ---
 
