@@ -55,3 +55,6 @@ numpy==2.4.6
 pandas==2.3.3
 tqdm==4.67.3
 requests==2.34.2
+
+# --- Testing ---
+pytest==9.1.1
