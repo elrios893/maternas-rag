@@ -1320,4 +1320,52 @@ El riesgo más concreto y menos evidente es otro: **los 18 textbooks completos**
 
 ---
 
+## Q29: ¿Los datos de usuarios reales (no los datasets) se anonimizan en tránsito y en reposo?
+
+**Contexto:** A diferencia de Q28 (que audita los *datasets de entrenamiento*), esta pregunta audita a los **usuarios reales** que conversan con el bot de Telegram — el requisito explícito fue: *"anonimizar datos en tránsito y no tener datos en reposo de pacientes; no usar nombres de Telegram ni alias, no guardar nada de eso, anonimizar todo"*.
+
+Se auditó todo `src/` (bot, API, RAG, clasificadores, skill de notificación) en modo solo lectura antes de tocar nada. Hallazgos y remediación aplicada:
+
+### Hallazgos
+
+| # | Ubicación | Problema | Severidad |
+|---|---|---|---|
+| 1 | `active_users.json` (raíz) | `chat_id` real de Telegram como clave + `latest_risk_flags` (banderas clínicas descriptivas) en **texto plano sin cifrar** | 🔴 Crítico |
+| 2 | `src/skills/__init__.py:32` | `ToolRegistry.execute()` logueaba `kwargs` completo — incluye el **mensaje clínico del paciente** cada vez que se dispara `notify_risk` (los casos de riesgo alto/medio) | 🔴 Crítico |
+| 3 | `src/bot/maternas_bot.py` `error_handler` | Logueaba el objeto `Update` completo de Telegram (`first_name`, `username`, `user_id`, texto del mensaje) sin sanitizar | 🟠 Alto |
+| 4 | `src/bot/maternas_bot.py` `histories` | Historial en RAM indexado por el `user_id` real de Telegram (no persistía a disco, pero contradecía el "no usar" literal) | 🟠 Alto |
+| 5 | Logs del scheduler (`_send_status_check`, `_sync_user_jobs`) | `chat_id` real expuesto repetidamente en `logger.debug/warning` | 🟡 Medio |
+
+**Lo que ya cumplía:** Groq (LLM) nunca recibe `user_id`/`chat_id`/nombre en los prompts; la API FastAPI es agnóstica de identidad (`ChatRequest`/`ChatResponse` no tienen campo de usuario); el email del notifier usa STARTTLS y tampoco incluye identidad de Telegram, solo el mensaje clínico + risk_level (transmisión cifrada, correcta).
+
+### Remediación aplicada
+
+1. **`active_users.json` ahora se cifra en disco** (Fernet, clave en `.env` como `ACTIVE_USERS_ENCRYPTION_KEY`, generada con `Fernet.generate_key()`). `src/bot/active_users.py` cifra en cada `_save()` y descifra en cada `_load()`; incluye migración automática de archivos preexistentes en texto plano (el `active_users.json` real del proyecto ya fue migrado y verificado).
+2. **Se eliminó `latest_risk_flags` del esquema persistido** — ya no se guardan banderas clínicas descriptivas (ej. "hemorragia", "convulsión"), solo `risk_points` (número) y `latest_risk_level` (`low`/`medium`/`high`), que es lo mínimo necesario para calcular la frecuencia de los check-ins del scheduler. La purga de flags legadas ocurre automáticamente al leer un archivo anterior a este cambio.
+3. **`ToolRegistry.execute()` ya no loguea `kwargs`** — solo loguea `list(kwargs.keys())`, es decir, qué parámetros se pasaron, nunca su contenido.
+4. **`error_handler` del bot ya no loguea el objeto `Update`** — solo un hash truncado del `user_id` (si está disponible) más el error, nunca el texto del mensaje ni la identidad.
+5. **`histories` ahora se indexa por `hash(user_id)`, no por el `user_id` real** — se usa SHA-256 con sal fija del proyecto; el identificador real de Telegram solo se usa donde es funcionalmente inevitable (que python-telegram-bot enrute la respuesta al chat correcto), nunca como clave interna ni en logs.
+6. **Todos los logs del scheduler usan un hash truncado (10 hex) del `chat_id`** en vez del valor real, suficiente para depurar/correlacionar sin exponer identidad.
+
+### Decisión de diseño documentada: el scheduler necesita *algún* identificador
+
+El status check scheduler (Q18 del README) requiere poder reencontrar a un usuario para enviarle un mensaje de seguimiento más tarde — eso exige un identificador direccionable de Telegram, no es evitable sin eliminar la funcionalidad. La decisión tomada fue **cifrar el dato en reposo en vez de eliminarlo**, ya que:
+- El `chat_id` solo se usa, descifrado, en el proceso del bot para llamar a la API de Telegram — nunca se loguea en claro ni se envía a Groq/SMTP.
+- Sin la clave de `.env` (que nunca se versiona, igual que `active_users.json`), el archivo en disco no es legible.
+
+### Qué NO se resolvió (fuera de alcance de esta remediación)
+
+- El email de notificación de riesgo (`src/skills/notifier/tool.py`) sigue transmitiendo el mensaje clínico completo del paciente al buzón configurado en `NOTIFIER_EMAIL_TO` — esto es el comportamiento esperado de una alerta clínica (un humano debe poder leer el caso), pero significa que ese dato queda en reposo en un sistema de terceros (Gmail) fuera del control del proyecto. No se consideró un hallazgo a corregir, sino una decisión de producto ya documentada aquí.
+- No hay política de retención/purga automática de `active_users.json` — una entrada con `risk_points=0` permanece indefinidamente hasta un `/reset` explícito o borrado manual. Pendiente de decidir si se necesita un TTL.
+
+**Archivos modificados:**
+- `src/bot/active_users.py` — cifrado Fernet, esquema sin `latest_risk_flags`
+- `src/bot/maternas_bot.py` — hashing de `user_id`/`chat_id` en `histories` y en todos los logs
+- `src/skills/__init__.py` — log de `ToolRegistry.execute()` sin valores de `kwargs`
+- `src/settings.py`, `.env`, `.env.example` — `ACTIVE_USERS_ENCRYPTION_KEY`
+- `requirements.txt` — `cryptography==48.0.0` (dependencia explícita, antes transitiva)
+- `tests/test_active_users.py` — tests actualizados al nuevo esquema + cobertura de cifrado en reposo
+
+---
+
 *Última actualización: 12 de agosto de 2026*

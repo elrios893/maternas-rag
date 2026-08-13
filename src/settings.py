@@ -65,6 +65,12 @@ class Settings(BaseSettings):
         env="STATUS_CHECK_MESSAGE",
     )
 
+    # --- Privacidad: cifrado del registro de usuarios activos del bot ---
+    # active_users.json contiene chat_id de Telegram + nivel de riesgo — se
+    # cifra en disco con Fernet. Generar con:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    active_users_encryption_key: str = Field("", env="ACTIVE_USERS_ENCRYPTION_KEY")
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

@@ -21,14 +21,14 @@ class TestRegister:
         users = au.get_all()
         assert users["111"]["risk_points"] == 0
         assert users["111"]["latest_risk_level"] == "low"
-        assert users["111"]["latest_risk_flags"] == []
+        assert "latest_risk_flags" not in users["111"]
         assert users["111"]["last_activity"]
 
-    def test_register_new_user_with_flags(self):
-        au.register(222, risk_level="high", risk_flags=["hemorragia"])
+    def test_register_new_user_high_does_not_store_flags(self):
+        au.register(222, risk_level="high")
         users = au.get_all()
         assert users["222"]["risk_points"] == 10
-        assert users["222"]["latest_risk_flags"] == ["hemorragia"]
+        assert "latest_risk_flags" not in users["222"]
 
     def test_register_accumulates_points(self):
         au.register(333, risk_level="medium")
@@ -48,11 +48,6 @@ class TestRegister:
         users = au.get_all()
         assert users["555"]["latest_risk_level"] == "low"
 
-    def test_register_keeps_flags_when_none_provided(self):
-        au.register(666, risk_level="high", risk_flags=["dolor_intenso"])
-        au.register(666, risk_level="low")
-        users = au.get_all()
-        assert users["666"]["latest_risk_flags"] == ["dolor_intenso"]
 
 
 class TestDecay:
@@ -87,10 +82,11 @@ class TestMigration:
         assert users["111"]["risk_points"] == 0
         assert users["111"]["latest_risk_level"] == "low"
 
-    def test_migration_persists_to_disk(self):
+    def test_migration_persists_to_disk_encrypted(self):
         au._REGISTRY_PATH.write_text(json.dumps([333]), encoding="utf-8")
         au.get_all()
-        on_disk = json.loads(au._REGISTRY_PATH.read_text(encoding="utf-8"))
+        raw = au._REGISTRY_PATH.read_bytes()
+        on_disk = json.loads(au._get_fernet().decrypt(raw))
         assert isinstance(on_disk, dict)
         assert "333" in on_disk
 
@@ -122,6 +118,25 @@ class TestUpdateCheckSent:
     def test_update_check_sent_unknown_user_is_noop(self):
         au.update_check_sent(9999)
         assert au.get_all() == {}
+
+
+class TestEncryptionAtRest:
+    def test_file_on_disk_is_not_plaintext_json(self):
+        au.register(1010, risk_level="high")
+        raw = au._REGISTRY_PATH.read_bytes()
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(raw.decode("utf-8"))
+
+    def test_decrypts_correctly_on_read(self):
+        au.register(2020, risk_level="medium")
+        users = au.get_all()
+        assert users["2020"]["risk_points"] == 3
+
+    def test_legacy_plaintext_flags_are_purged_on_read(self):
+        legacy = {"3030": {"risk_points": 10, "latest_risk_level": "high", "latest_risk_flags": ["hemorragia"]}}
+        au._REGISTRY_PATH.write_text(json.dumps(legacy), encoding="utf-8")
+        users = au.get_all()
+        assert "latest_risk_flags" not in users["3030"]
 
 
 class TestGetAll:

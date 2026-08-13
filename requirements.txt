@@ -32,6 +32,9 @@ tokenizers==0.22.2
 # --- Bot ---
 python-telegram-bot==21.10
 
+# --- Privacidad (cifrado de active_users.json) ---
+cryptography==48.0.0
+
 # --- Scheduler ---
 apscheduler==3.10.4
 

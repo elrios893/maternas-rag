@@ -29,7 +29,9 @@ class ToolRegistry:
         tool = cls._tools.get(name)
         if tool is None:
             raise ValueError(f"Tool '{name}' no encontrada. Tools disponibles: {list(cls._tools.keys())}")
-        logger.info(f"[ToolRegistry] Ejecutando tool '{name}' con kwargs={kwargs}")
+        # No se loguean los valores de kwargs — pueden incluir el mensaje
+        # clínico del paciente (ej. el parámetro 'query' de notify_risk).
+        logger.info(f"[ToolRegistry] Ejecutando tool '{name}' con parámetros: {list(kwargs.keys())}")
         return tool.fn(**kwargs)
 
     @classmethod

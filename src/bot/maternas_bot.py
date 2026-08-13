@@ -22,6 +22,7 @@ Comandos:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import httpx
 import logging
 import sys
@@ -41,6 +42,29 @@ from src.bot.active_users import (
 )
 
 # ---------------------------------------------------------------------------
+# Anonimización de identificadores de Telegram
+#
+# El chat_id/user_id real nunca se usa como clave de indexación interna ni
+# aparece en logs — se deriva un hash SHA-256 (con sal fija del proyecto).
+# El identificador real solo se usa en el punto mínimo necesario: la llamada
+# a la API de Telegram para enrutar el mensaje (context.bot.send_message /
+# update.message.reply_text), que python-telegram-bot ya resuelve a partir
+# del objeto Update entrante, no de nuestras estructuras internas.
+# ---------------------------------------------------------------------------
+
+_HASH_SALT = "maternas-bot:"
+
+
+def _hash_id(user_id: int) -> str:
+    """Hash completo (64 hex) — usado como clave interna, sin colisiones prácticas."""
+    return hashlib.sha256(f"{_HASH_SALT}{user_id}".encode()).hexdigest()
+
+
+def _short_hash(user_id: int) -> str:
+    """Hash truncado (10 hex) — solo para trazabilidad legible en logs."""
+    return _hash_id(user_id)[:10]
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -55,11 +79,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Historial conversacional en memoria: { user_id: [{"role": ..., "content": ...}] }
-# Se pierde al reiniciar el bot — suficiente para MVP.
+# Historial conversacional en memoria: { hash(user_id): [{"role": ..., "content": ...}] }
+# Indexado por hash, no por el user_id real de Telegram. Se pierde al
+# reiniciar el bot — suficiente para MVP.
 # ---------------------------------------------------------------------------
 
-histories: dict[int, list[dict]] = {}
+histories: dict[str, list[dict]] = {}
 
 # ---------------------------------------------------------------------------
 # Flag de salud de la API (para el scheduler)
@@ -77,7 +102,7 @@ _api_healthy: bool = False
 async def call_chat(message: str, user_id: int) -> dict | None:
     payload = {
         "message": message,
-        "history": histories.get(user_id, []),
+        "history": histories.get(_hash_id(user_id), []),
         "k": 5,
     }
     try:
@@ -134,8 +159,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    if user_id in histories:
-        del histories[user_id]
+    key = _hash_id(user_id)
+    if key in histories:
+        del histories[key]
     # Dar de baja del scheduler — /reset también detiene los check-ins automáticos
     remove_active_user(user_id)
     await update.message.reply_text("Conversación reiniciada. ¿En qué puedo ayudarte?")
@@ -188,18 +214,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Siempre guardamos en el historial, incluso durante clarificación — de lo
     # contrario el sistema pierde de vista los síntomas mencionados antes de
     # que la usuaria responda la pregunta de clarificación.
-    if user_id not in histories:
-        histories[user_id] = []
-    histories[user_id].append({"role": "user",      "content": text})
-    histories[user_id].append({"role": "assistant", "content": answer})
+    key = _hash_id(user_id)
+    if key not in histories:
+        histories[key] = []
+    histories[key].append({"role": "user",      "content": text})
+    histories[key].append({"role": "assistant", "content": answer})
 
     # Registro para el scheduler de status checks — se hace aunque la
     # respuesta sea una pregunta de clarificación, porque el riesgo ya
-    # se evaluó sobre el mensaje.
+    # se evaluó sobre el mensaje. No se persisten las banderas clínicas
+    # descriptivas (risk_flags), solo el nivel agregado.
     register_active_user(
         user_id,
         risk_level=result.get("risk_level", "low"),
-        risk_flags=result.get("risk_flags", []),
     )
 
     if needs_clarification:
@@ -213,8 +240,13 @@ async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "Solo entiendo mensajes de texto. Por favor escribe tu pregunta."
     )
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Error procesando update {update}: {context.error}")
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # No se loguea el objeto Update completo — contiene first_name, username
+    # y el texto del mensaje del usuario (posiblemente dato clínico).
+    ref = "desconocido"
+    if isinstance(update, Update) and update.effective_user:
+        ref = _short_hash(update.effective_user.id)
+    logger.error(f"Error procesando update de usuario {ref}: {context.error}")
 
 # ---------------------------------------------------------------------------
 # Status Check Scheduler (integrado — usa la JobQueue nativa de PTB)
@@ -256,9 +288,9 @@ async def _send_status_check(context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode=constants.ParseMode.MARKDOWN,
         )
         update_check_sent(chat_id)
-        logger.debug("Status check enviado a %s", chat_id)
+        logger.debug("Status check enviado a %s", _short_hash(chat_id))
     except Exception as e:
-        logger.warning("Error enviando status check a %s: %s", chat_id, e)
+        logger.warning("Error enviando status check a %s: %s", _short_hash(chat_id), e)
 
 
 async def _sync_user_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -271,7 +303,7 @@ async def _sync_user_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
     for chat_id in existing - active:
         _user_status_jobs.pop(chat_id, None).schedule_removal()
         _user_risk_levels.pop(chat_id, None)
-        logger.debug("Job eliminado para chat %s", chat_id)
+        logger.debug("Job eliminado para chat %s", _short_hash(chat_id))
 
     # Crear o actualizar jobs según riesgo
     for chat_id, user_data in users.items():
@@ -290,7 +322,7 @@ async def _sync_user_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
             _user_risk_levels[chat_id] = risk_level
             logger.debug(
                 "Job creado para %s — riesgo=%s, cada %.0fs",
-                chat_id, risk_level, interval,
+                _short_hash(chat_id), risk_level, interval,
             )
         else:
             prev = _user_risk_levels.get(chat_id)
@@ -307,7 +339,7 @@ async def _sync_user_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
                 _user_risk_levels[chat_id] = risk_level
                 logger.debug(
                     "Job re-programado para %s — riesgo %s→%s, cada %.0fs",
-                    chat_id, prev, risk_level, interval,
+                    _short_hash(chat_id), prev, risk_level, interval,
                 )
 
 # ---------------------------------------------------------------------------
