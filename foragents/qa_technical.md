@@ -1272,4 +1272,52 @@ El `FAISSStore` del proyecto almacena metadatos con esta estructura:
 
 ---
 
-*Última actualización: 19 de julio de 2026*
+## Q28: ¿Los datasets clínicos usados tienen licencia para este tipo de trabajo? ¿Están anonimizados?
+
+**Contexto:** El proyecto no tenía documentada la licencia ni la política de privacidad de ninguno de los datasets fuente (`foragents/data_schemas.md` documenta el *esquema* de los datos, no su procedencia legal). Se revisó cada repositorio de origen citado en `foragents/Segundo entregable.md` y en Q22-Q27.
+
+**Respuesta corta:** No, no todos dicen lo mismo — hay tres licencias distintas, un bloque de contenido (los textbooks) sin licencia identificable, y ninguna declaración explícita de anonimización por parte de los propios creadores de los datasets. Nada de esto es necesariamente descalificante, pero requiere acción (atribución CC-BY pendiente) y una decisión consciente sobre los textbooks.
+
+### Tabla comparativa por dataset ingestado
+
+| Dataset (carpeta local) | Fuente / origen citado | Licencia declarada | ¿Contiene datos de pacientes reales? | Anonimización declarada por el creador |
+|---|---|---|---|---|
+| `datasets/data/` (MedMCQA) | [huggingface.co/datasets/openlifescienceai/medmcqa](https://huggingface.co/datasets/openlifescienceai/medmcqa) | **Apache 2.0** | No — preguntas de examen (AIIMS, NEET PG), no historias clínicas | N/A (no hay paciente que anonimizar); la sección "Personal and Sensitive Information" del dataset card está sin completar (`[Needs More Information]`) |
+| `datasets/data_clean/` (MedQA: US/Taiwan/Mainland + textbooks) | Preguntas: [github.com/jind11/MedQA](https://github.com/jind11/MedQA) (paper Jin et al. 2020, arXiv:2009.13081), mirror usado: Kaggle `moaaztameer/medqa-usmle` | **MIT** (repo jind11/MedQA) — la licencia del mirror de Kaggle no se pudo verificar (página no expone metadatos de licencia vía fetch) | No — preguntas de exámenes de licenciatura médica (USMLE/MCMLE/TWMLE) | N/A por el mismo motivo — no son historias clínicas |
+| `datasets/data_clean/.../textbooks/en/` (18 libros: Gray's Anatomy, Harrison, Robbins, Schwartz's Surgery…) | Empaquetados junto al dataset MedQA en el mismo repositorio/Google Drive | **⚠️ Sin licencia identificable** — son libros de texto médicos comerciales con copyright editorial propio, la inclusión en el repo de MedQA no otorga una licencia de reuso | No aplica (no son datos de pacientes) | No aplica |
+| `datasets/multiclinsum_large-scale_train_es/` | [zenodo.org/records/15517617](https://zenodo.org/records/15517617) — shared task MultiClinSum, BioASQ/CLEF 2025, derivado de PMC-Patients / PubMed Central | **CC-BY-4.0** (requiere atribución al reusar/redistribuir) | **Sí** — son resúmenes y textos completos de casos clínicos reales publicados en revistas médicas | No hay declaración explícita de desidentificación en la ficha del dataset ni en el paper de overview (ceur-ws Vol-4038). Al derivarse de *case reports* ya publicados en revistas indexadas en PMC, estos históricamente exigen consentimiento del paciente y desidentificación como requisito editorial (normas ICMJE) — pero esto es una inferencia razonable, **no una garantía documentada por el equipo de MultiClinSum** |
+| Corpus MaternaQA-es (`datasets/obstetrics/lm/*.jsonl`, ingestado en Config C, ver Q27) | Repo `minciencias-maternas` (GitHub), derivado de 63 PDFs: GPC de atención prenatal colombiana + revistas de obstetricia | Repo de benchmark (`obstetrics-rag-benchmark`) licenciado **MIT** — pero esa licencia cubre el *código*, no necesariamente los 63 PDFs fuente (GPCs gubernamentales vs. artículos de revista pueden tener licencias distintas entre sí, no verificado documento por documento). El dataset `JhonHander/MaternaQA-es` en HuggingFace devolvió **401 Unauthorized** al intentar consultarlo — parece ser privado/gated | No — son guías clínicas institucionales y artículos, no historias de pacientes individuales | N/A por el mismo motivo |
+
+### Hallazgo principal: no todos dicen lo mismo
+
+Los tres datasets con licencia verificable usan licencias permisivas pero **distintas**, con obligaciones distintas:
+
+| Licencia | Dataset | Obligación clave |
+|---|---|---|
+| Apache 2.0 | MedMCQA | Conservar aviso de copyright/cambios; incluye cláusula de patentes |
+| MIT | MedQA (preguntas) | Conservar aviso de copyright y licencia |
+| CC-BY-4.0 | MultiClinSum | **Dar crédito/atribución** al reusar o redistribuir — actualmente el proyecto no expone ninguna página de créditos/fuentes visible para el usuario final (ni en `src/ui/app.py` ni en el bot de Telegram) |
+
+**Pendiente concreto:** para cumplir CC-BY-4.0 con MultiClinSum, el proyecto debería mostrar una atribución (aunque sea en un `/help` o footer) citando la fuente. Hoy esa cita solo existe en `foragents/Segundo entregable.md`, que es documentación interna, no algo visible al usuario del chatbot.
+
+### El riesgo real no es el más obvio
+
+La pregunta "¿están anonimizados?" es la más natural de hacer, pero en la práctica el **menor** riesgo del corpus: MedMCQA y MedQA (la mayoría del volumen, ~340k de ~427k vectores) son preguntas de examen, nunca hubo un paciente que anonimizar. El único dataset con pacientes reales (MultiClinSum) son casos ya publicados en revistas médicas, donde la desidentificación es una norma editorial estándar aunque no esté declarada explícitamente por este dataset en particular.
+
+El riesgo más concreto y menos evidente es otro: **los 18 textbooks completos** (`data_clean/.../textbooks/en/`) son libros de texto médicos comerciales con copyright editorial activo (Gray's Anatomy, Harrison's, Robbins, Schwartz's Surgery, etc.). Estar empaquetados junto a un dataset académico con licencia MIT no extiende esa licencia al contenido de los libros — el MIT de jind11/MedQA cubre el código y las preguntas que ese equipo generó, no los libros de terceros que decidieron incluir como corpus de apoyo. Usar el texto completo de esos libros para indexarlos en un RAG de producción es la pieza de este análisis que más justifica revisión legal antes de considerar el sistema "listo para producción" más allá del ámbito educativo/de desarrollo.
+
+### Recomendación
+
+1. **No es necesario** un proceso de anonimización propio — ningún dataset ingestado contiene PHI identificable atribuible a un paciente individual accesible por el proyecto.
+2. ✅ **Hecho** — atribución visible para MultiClinSum (CC-BY-4.0) y el resto de datasets agregada en `README.md` (tabla "Datasets indexados y licencias"), sidebar de `src/ui/app.py` (expander "Fuentes de datos y licencias") y `/help` del bot de Telegram (`src/bot/maternas_bot.py`).
+3. ⚠️ **PENDIENTE DE REVISIÓN LEGAL** — uso de los 18 textbooks completos (`data_clean/.../textbooks/en/`) antes de cualquier despliegue más allá de uso educativo/interno. Es el punto más débil de todo el análisis de licencias y **queda marcado aquí únicamente** (no se ha tomado ninguna acción sobre el índice FAISS ni se ha comunicado como resuelto en README/UI/bot).
+4. Verificar directamente con el equipo de `minciencias-maternas` qué licencia aplica a los 63 PDFs fuente de MaternaQA-es, ya que el MIT del repo de benchmark no cubre necesariamente el contenido de esos documentos.
+
+**Archivos relevantes revisados:**
+- `foragents/data_schemas.md` — esquemas de los 3 datasets base (no incluye licencia)
+- `foragents/Segundo entregable.md` — únicas URLs de origen documentadas en el repo
+- `foragents/qa_technical.md` Q22-Q27 — contexto de MaternaQA-es
+
+---
+
+*Última actualización: 12 de agosto de 2026*

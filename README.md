@@ -17,11 +17,16 @@ Chatbot conversacional basado en arquitectura RAG orientado a madres gestantes. 
 | UI | Streamlit |
 | Bot | Telegram (`python-telegram-bot`) |
 
-## Datasets indexados
+## Datasets indexados y licencias
 
-- **Multiclinsum** — 25,902 casos clínicos en español
-- **MedMCQA** — 187,005 preguntas médicas (EN)
-- **MedQA** — US / Taiwan / Mainland + 18 textbooks médicos (EN)
+| Dataset | Contenido | Licencia | Atribución |
+|---|---|---|---|
+| **MedMCQA** | 187,005 preguntas médicas de examen (EN) | [Apache 2.0](https://huggingface.co/datasets/openlifescienceai/medmcqa) | openlifescienceai/medmcqa |
+| **MedQA** | Preguntas de licenciatura médica US/Taiwan/Mainland (EN/ZH) | [MIT](https://github.com/jind11/MedQA) | Jin et al., 2020 — *What Disease does this Patient Have?* (arXiv:2009.13081) |
+| **MultiClinSum** | 25,902 casos clínicos en español | [CC-BY-4.0](https://zenodo.org/records/15517617) | MultiClinSum Corpus — BioASQ / CLEF 2025 |
+| **MaternaQA-es** (corpus obstétrico, Config C) | Chunks de GPCs y revistas de obstetricia colombianas | MIT (repo de benchmark) | `minciencias-maternas/obstetrics-rag-benchmark` |
+
+> Los 18 textbooks médicos en inglés incluidos en `data_clean/.../textbooks/en/` (Gray's Anatomy, Harrison's, Robbins, etc.) no tienen licencia de reuso identificada — ver el detalle y el estado de revisión en `foragents/qa_technical.md` (Q28).
 
 ## Estructura
 

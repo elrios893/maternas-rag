@@ -126,7 +126,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• \"¿Es normal tener náuseas a las 10 semanas?\"\n"
         "• \"¿Qué alimentos debo evitar?\"\n"
         "• \"Tengo dolor de cabeza intenso y veo manchas\"\n\n"
-        "Si tienas una urgencia, por favor contacta a tu médico de inmediato.",
+        "Si tienas una urgencia, por favor contacta a tu médico de inmediato.\n\n"
+        "📖 Fuentes de datos: MedMCQA (Apache 2.0), MedQA (MIT), MultiClinSum "
+        "(CC-BY 4.0, BioASQ/CLEF 2025), MaternaQA-es (MIT). Detalle en el README del proyecto.",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
 

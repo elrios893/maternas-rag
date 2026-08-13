@@ -206,6 +206,17 @@ with st.sidebar:
         st.session_state.meta     = []
         st.rerun()
 
+    st.divider()
+
+    with st.expander("📖 Fuentes de datos y licencias"):
+        st.markdown(
+            "- **MedMCQA** — [Apache 2.0](https://huggingface.co/datasets/openlifescienceai/medmcqa)\n"
+            "- **MedQA** — [MIT](https://github.com/jind11/MedQA) (Jin et al., 2020)\n"
+            "- **MultiClinSum** — [CC-BY 4.0](https://zenodo.org/records/15517617) (BioASQ / CLEF 2025)\n"
+            "- **MaternaQA-es** — MIT (`minciencias-maternas/obstetrics-rag-benchmark`)\n\n"
+            "Detalle completo en `foragents/qa_technical.md` (Q28)."
+        )
+
 # ---------------------------------------------------------------------------
 # Área principal — historial de chat
 # ---------------------------------------------------------------------------
