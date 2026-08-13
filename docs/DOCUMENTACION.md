@@ -4,6 +4,13 @@
 > **Convocatoria:** 890 Minciencias · Institución Universitaria de Envigado  
 > **Última actualización:** Julio 2026
 
+> ⚠️ **Nota de actualización (agosto 2026):** `textbook` y `multiclinsum_*` fueron
+> removidos del índice FAISS por riesgo de licencia (ver `foragents/qa_technical.md`
+> Q28/Q31). `src/rag/bm25_index.py` fue eliminado (ya no hay BM25 en producción —
+> el retrieval es 100% denso FAISS). La config activa en producción es **Config D**
+> (`medmcqa` + `medqa_*` + `maternaqaes_lm`, 253,455 vectores), no Config C/B como
+> describen algunas secciones históricas de este documento más abajo.
+
 ---
 
 ## 1. Portada / Resumen Ejecutivo
@@ -99,8 +106,7 @@ flowchart TD
 | **chain.py** | Orquestador del turno completo: intent → risk → clarification check → notificación → retrieval → generación → respuesta |
 | **Intent Classifier** | Clasifica la consulta en 12 categorías usando llama-3.3-70b (zero-shot JSON), con fallback heurístico por keywords |
 | **Risk Detector** | Evalúa urgencia clínica en 3 niveles: capa 1 heurística (sin API, 0ms), capa 2 LLM si la heurística no detecta nada |
-| **Retriever** | Combina búsqueda densa FAISS (fuentes médicas estructuradas) + BM25 léxico (MultiClinSum) para mayor cobertura |
-| **BM25 Index** | Singleton en RAM sobre los 51 804 fragmentos de MultiClinSum; solo devuelve resultados si hay coincidencia léxica real |
+| **Retriever** | Búsqueda densa FAISS sobre `medmcqa` + `medqa_*` + `maternaqaes_lm` (Config D, producción actual; `textbook`/`multiclinsum` removidos por licencia) |
 | **FAISS Store** | Gestiona el índice vectorial en disco: carga, búsqueda, adición de documentos, persistencia |
 | **Notifier Skill** | Envía alertas por email SMTP (Gmail) cuando se detecta riesgo alto o medio-alto |
 | **eval_pipeline.py** | Pipeline de evaluación en dos fases con modelos independientes; calcula 5 métricas Ragas + latencia |
@@ -118,11 +124,11 @@ maternas-rag/
 │   │   └── schemas.py            # Modelos Pydantic de request/response
 │   ├── rag/
 │   │   ├── chain.py              # Orquestador principal del turno RAG
-│   │   ├── retriever.py          # Config activa (= configC actualmente)
-│   │   ├── retriever_configA.py  # FAISS puro — baseline
-│   │   ├── retriever_configB.py  # FAISS+BM25 — producción recomendada
-│   │   ├── retriever_configC.py  # FAISS+BM25+corpus ES — mejor faithfulness
-│   │   └── bm25_index.py         # Singleton BM25 sobre MultiClinSum
+│   │   ├── retriever.py          # Config activa (= configD actualmente — producción)
+│   │   ├── retriever_configA.py  # [histórico] FAISS puro — baseline
+│   │   ├── retriever_configB.py  # [histórico] FAISS+BM25
+│   │   ├── retriever_configC.py  # [histórico] FAISS+BM25+corpus ES
+│   │   └── retriever_configD.py  # medmcqa+medqa_*+maternaqaes_lm, sin textbook/multiclinsum (licencia)
 │   ├── classifiers/
 │   │   ├── intent_classifier.py  # Clasificación en 12 intents (LLM + heurística)
 │   │   └── risk_detector.py      # Detección de riesgo en 3 niveles (reglas + LLM)

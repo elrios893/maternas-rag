@@ -11,7 +11,7 @@ Chatbot conversacional basado en arquitectura RAG orientado a madres gestantes. 
 | Capa | Tecnología |
 |---|---|
 | Embedding | `intfloat/multilingual-e5-base` (768 dims, ES/EN/ZH) en CUDA |
-| Vector store | FAISS `IndexFlatIP` — 375,392 vectores |
+| Vector store | FAISS `IndexFlatIP` — 253,455 vectores |
 | LLM | `llama-3.3-70b-versatile` vía Groq API |
 | API | FastAPI + uvicorn |
 | UI | Streamlit |
@@ -23,10 +23,9 @@ Chatbot conversacional basado en arquitectura RAG orientado a madres gestantes. 
 |---|---|---|---|
 | **MedMCQA** | 187,005 preguntas médicas de examen (EN) | [Apache 2.0](https://huggingface.co/datasets/openlifescienceai/medmcqa) | openlifescienceai/medmcqa |
 | **MedQA** | Preguntas de licenciatura médica US/Taiwan/Mainland (EN/ZH) | [MIT](https://github.com/jind11/MedQA) | Jin et al., 2020 — *What Disease does this Patient Have?* (arXiv:2009.13081) |
-| **MultiClinSum** | 25,902 casos clínicos en español | [CC-BY-4.0](https://zenodo.org/records/15517617) | MultiClinSum Corpus — BioASQ / CLEF 2025 |
-| **MaternaQA-es** (corpus obstétrico, Config C) | Chunks de GPCs y revistas de obstetricia colombianas | MIT (repo de benchmark) | `minciencias-maternas/obstetrics-rag-benchmark` |
+| **MaternaQA-es** (corpus obstétrico) | Chunks de GPCs y revistas de obstetricia colombianas | MIT (repo de benchmark) | `minciencias-maternas/obstetrics-rag-benchmark` |
 
-> Los 18 textbooks médicos en inglés incluidos en `data_clean/.../textbooks/en/` (Gray's Anatomy, Harrison's, Robbins, etc.) no tienen licencia de reuso identificada — ver el detalle y el estado de revisión en `foragents/qa_technical.md` (Q28).
+> **MultiClinSum** (casos clínicos reales, CC-BY-4.0) y los **18 textbooks médicos en inglés** de `data_clean/.../textbooks/en/` (Gray's Anatomy, Harrison's, Robbins, etc. — sin licencia de reuso identificada) fueron **removidos del índice FAISS** por riesgo de licencia/datos de pacientes — ver `foragents/qa_technical.md` (Q28, Q31). El impacto en las métricas Ragas fue nulo (dentro del margen de ruido de la evaluación).
 
 ## Estructura
 
@@ -47,9 +46,9 @@ foragents/          # plan técnico y Q&A del proyecto
 # 1. Entorno
 python -m venv venv
 .\venv\Scripts\activate       # Windows
-pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
-pip install sentence-transformers==2.7.0
 pip install -r requirements.txt
+# Si tienes GPU NVIDIA (recomendado), reemplaza el torch CPU-only por la build CUDA:
+pip install torch==2.12.0+cu126 --index-url https://download.pytorch.org/whl/cu126
 
 # 2. Configuración
 cp .env.example .env          # completar GROQ_API_KEY y rutas de datasets
@@ -134,9 +133,8 @@ query → classify_intent() → detect_risk()
               │
               ├─ ¿query vaga? → pregunta de clarificación al usuario
               │
-              └─ Búsqueda híbrida:
-                   FAISS densa (textbook + medmcqa + medqa)
-                 + BM25 léxico  (multiclinsum, solo si hay match exacto)
+              └─ Búsqueda densa FAISS
+                   (medmcqa + medqa_* + maternaqaes_lm)
                        │
                        └─ Groq LLM → respuesta con citas [n]
 ```
@@ -145,16 +143,9 @@ query → classify_intent() → detect_risk()
 - **Riesgo MEDIUM** → respuesta con recomendación médica (LLM decide si notificar)
 - **Riesgo LOW** → respuesta educativa con citas a la fuente
 
-## Retrieval híbrido
+## Retrieval
 
-El índice tiene 375,392 vectores de tres fuentes con naturaleza distinta. Para no contaminar el contexto con casos clínicos irrelevantes, se usa una estrategia de búsqueda por tipo de fuente:
-
-| Fuente | Estrategia | Motivo |
-|---|---|---|
-| `textbook`, `medmcqa`, `medqa_*` | FAISS densa (semántica) | Conocimiento estructurado, responde preguntas generales |
-| `multiclinsum_*` | BM25 léxico (exacto) | Solo aparece si hay coincidencia real de términos clínicos |
-
-Si no hay coincidencia léxica en Multiclinsum, esos fragmentos no se incluyen — evitando que casos raros de pacientes contaminen la respuesta.
+El índice tiene 253,455 vectores de tres fuentes (`medmcqa`, `medqa_us`/`medqa_taiwan`/`medqa_mainland`, `maternaqaes_lm`), todas recuperadas por búsqueda densa FAISS (similitud coseno). `textbook` y `multiclinsum_*` fueron removidos del índice por riesgo de licencia — ver `foragents/qa_technical.md` (Q31).
 
 ## Preguntas de clarificación
 
@@ -196,7 +187,7 @@ Registrar en `ToolRegistry` y ejecutar desde `chain.py` vía `ToolRegistry.execu
 src/
 ├── ingestion/      # formatters, chunkers, embedder, FAISS store, scripts de ingestión
 ├── classifiers/    # intent_classifier.py, risk_detector.py
-├── rag/            # retriever.py, bm25_index.py, chain.py
+├── rag/            # retriever.py, chain.py
 ├── api/            # main.py (FastAPI), schemas.py
 ├── ui/             # app.py (Streamlit)
 ├── bot/            # maternas_bot.py (Telegram)
@@ -216,28 +207,28 @@ El sistema se evalúa con el framework **Ragas** sobre el benchmark **MaternaQA-
 
 ```bash
 # Fase 1: generar respuestas
-python src/evaluation/eval_pipeline.py --config configC --sample 15 --generate-only
+python src/evaluation/eval_pipeline.py --config configD --sample 15 --generate-only
 
 # Fase 2: evaluar con Ragas
-python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_configC_<TIMESTAMP>.json
+python src/evaluation/eval_pipeline.py --evaluate-only evaluation_reports/eval_raw_configD_<TIMESTAMP>.json
 ```
 
 Ver guía completa en `foragents/eval_runbook.md`.
 
-### Mejores resultados obtenidos — Config C v3
+### Mejores resultados obtenidos — Config D (producción actual)
 
-Configuración: FAISS + BM25 híbrido + corpus obstétrico MaternaQA-es LM completo (train+val+test, 5 353 chunks a ~336 tok), evaluado sobre 14 pares sin preguntas de clarificación.
+Configuración: FAISS densa pura sobre `medmcqa` + `medqa_*` + `maternaqaes_lm` (sin `textbook` ni `multiclinsum`, removidos por licencia), evaluado sobre 14 pares sin preguntas de clarificación.
 
-| Métrica | Config C v3 | Baseline MaternaQA-es |
-|---|:---:|:---:|
-| `faithfulness` | **0.456** | 0.713 |
-| `answer_relevancy` | **0.816** | 0.558 |
-| `answer_correctness` | **0.532** | — |
-| `context_recall` | **0.452** | — |
-| `context_precision` | **0.388** | — |
-| `latency_avg_s` | ~10.2 s | — |
+| Métrica | Config D | Config C (con textbook+multiclinsum) | Baseline MaternaQA-es |
+|---|:---:|:---:|:---:|
+| `faithfulness` | **0.497** | 0.456 | 0.713 |
+| `answer_relevancy` | **0.733** | 0.816 | 0.558 |
+| `answer_correctness` | **0.551** | 0.532 | — |
+| `context_recall` | **0.452** | 0.452 | — |
+| `context_precision` | **0.360** | 0.388 | — |
+| `latency_avg_s` | ~9.6 s | ~10.2 s | — |
 
-`answer_relevancy` supera el baseline publicado. La brecha en `faithfulness` se debe principalmente a que cuatro de los cinco datasets indexados son de medicina general (no obstétrica) — incluidos como requisito del proyecto — lo que introduce ruido en el retrieval.
+Remover `textbook` y `multiclinsum` no cambió las métricas de forma significativa (deltas dentro del margen de ruido, std~0.25 con 14-15 pares) — la brecha en `faithfulness` frente al baseline se debe principalmente a que los PDFs exactos que generaron el benchmark MaternaQA-es (split test) no están indexados, para evitar data leakage.
 
 ## Siguientes mejoras
 

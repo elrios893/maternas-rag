@@ -4,6 +4,11 @@
 > Ver también `foragents/eval_setup_critico.md` para decisiones arquitectónicas
 > y resultados históricos.
 
+> ⚠️ **Actualización 13-ago-2026:** `textbook` y `multiclinsum` fueron removidos del
+> índice FAISS por licencia (`qa_technical.md` Q31). **Config D es ahora la config de
+> producción** (reemplaza a Config B/C referenciadas abajo). Índice: 380,745 → 253,455
+> vectores. `src/rag/bm25_index.py` fue eliminado — ya no hay capa BM25.
+
 ---
 
 ## Arquitectura de dos modelos — NO confundir

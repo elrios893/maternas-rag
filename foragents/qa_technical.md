@@ -1404,4 +1404,45 @@ El texto original (política de tratamiento de datos del proyecto) se resumió c
 
 ---
 
-*Última actualización: 12 de agosto de 2026*
+## Q31: ¿Se removieron finalmente `textbook` y `multiclinsum` del índice por licencia? ¿Qué cambió?
+
+**Contexto:** Q28 había dejado marcados dos riesgos de licencia sin resolver: los 18 textbooks médicos en inglés sin licencia de reuso identificable, y MultiClinSum (CC-BY-4.0, casos clínicos reales derivados de PMC-Patients, sin garantía documentada de desidentificación por el propio dataset). El usuario decidió removerlos del índice de producción, pero primero se midió el impacto en las métricas Ragas antes de ejecutar el cambio, para no tomar la decisión a ciegas.
+
+### Medición previa (Config D vs Config C, mismos 14 pares, seed=42, judge Cerebras gemma-4-31b)
+
+Se creó `src/rag/retriever_configD.py` — idéntico a Config C pero con `DENSE_SOURCES` sin `textbook` y sin la capa BM25 de `multiclinsum` — y se corrió el pipeline de evaluación completo (`eval_pipeline.py --config configD --sample 15 --generate-only` + `--evaluate-only`) sin tocar el índice físico todavía, para comparar en igualdad de condiciones con el reporte de Config C más reciente (`eval_report_configC_20260721_153327.md`).
+
+| Métrica | Config C (con textbook+multiclinsum) | Config D (sin ellos) | Δ |
+|---|---:|---:|---:|
+| `faithfulness` | 0.4556 | 0.4973 | +0.042 |
+| `answer_correctness` | 0.5315 | 0.5507 | +0.019 |
+| `answer_relevancy` | 0.8155 | 0.7328 | −0.083 |
+| `context_recall` | 0.4524 | 0.4524 | 0.000 |
+| `context_precision` | 0.3876 | 0.3599 | −0.028 |
+
+**Conclusión de la medición:** con 14 pares y una desviación estándar conocida de ~0.25 (documentada en `eval_runbook.md`), todos los deltas caen dentro del ruido estadístico — remover ambos datasets no tiene un efecto medible en las métricas. `context_recall` da idéntico en ambas configs porque depende de `maternaqaes_lm`, que no cambió. El techo real de las métricas sigue siendo la ausencia de los PDFs exactos del benchmark MaternaQA-es (split test, excluido deliberadamente por leakage), no la composición de multiclinsum/textbook.
+
+### Remoción física del índice
+
+Con la medición en mano, se removieron los vectores de forma permanente:
+
+1. Backup completo de `faiss_store/` (index.faiss + metadata.pkl + build_info.json, 1.5 GB) fuera del repo, antes de modificar nada.
+2. Script one-off: cargó el índice, reconstruyó los vectores ya calculados vía `index.reconstruct_n()` (sin re-embeber nada), filtró por `source_dataset not in {"textbook", "multiclinsum_summary", "multiclinsum_fulltext"}`, y reconstruyó un `IndexFlatIP` nuevo con la metadata remapeada a ids secuenciales.
+3. Resultado: **380,745 → 253,455 vectores** (−127,290, −33.4% del índice). Desglose de lo removido: `textbook` 75,486 · `multiclinsum_summary` 25,902 · `multiclinsum_fulltext` 25,902.
+4. `src/rag/retriever_configD.py` se copió a `src/rag/retriever.py` — **Config D es ahora la config de producción**, reemplazando a Config C.
+5. `src/rag/bm25_index.py` se eliminó (dependía exclusivamente de `multiclinsum`, que ya no existe en el índice — hubiera construido un índice BM25 vacío). La dependencia `rank-bm25` se removió de `requirements.txt` y se desinstaló del venv.
+6. Suite de tests (104 casos) y un smoke test de `retrieve()` contra el índice nuevo confirmaron que todo sigue funcionando.
+
+**Nota:** `retriever_configA.py`, `retriever_configB.py` y `retriever_configC.py` quedan en el repo solo como referencia histórica — ya no son reproducibles tal cual contra el índice actual, porque las fuentes que usaban (`textbook`, `multiclinsum_*`) ya no están indexadas.
+
+**Archivos modificados:**
+- `src/rag/retriever_configD.py` — nuevo (config sin textbook/multiclinsum)
+- `src/rag/retriever.py` — reemplazado por Config D (producción)
+- `src/rag/bm25_index.py` — eliminado
+- `requirements.txt` — removido `rank-bm25==0.2.2`
+- `faiss_store/index.faiss`, `faiss_store/metadata.pkl`, `faiss_store/build_info.json` — reconstruidos sin textbook/multiclinsum (253,455 vectores)
+- `README.md`, `docs/DOCUMENTACION.md` — actualizados para reflejar Config D como producción y el índice sin BM25
+
+---
+
+*Última actualización: 13 de agosto de 2026*

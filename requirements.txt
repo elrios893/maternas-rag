@@ -38,9 +38,6 @@ cryptography==48.0.0
 # --- Scheduler ---
 apscheduler==3.10.4
 
-# --- Search ---
-rank-bm25==0.2.2
-
 # --- Evaluation ---
 ragas==0.2.12
 

@@ -4,6 +4,12 @@ Documento de referencia para comparar y replicar las dos configuraciones de retr
 evaluadas en el sistema. Cada configuración puede restaurarse siguiendo los pasos de código
 indicados. Los resultados de Ragas quedan registrados en `evaluation_reports/`.
 
+> ⚠️ **Actualización 13-ago-2026:** `textbook` y `multiclinsum` fueron removidos del
+> índice FAISS por licencia (`qa_technical.md` Q28/Q31). **Config D** (`medmcqa` +
+> `medqa_*` + `maternaqaes_lm`, sin BM25) es la config activa en producción — ver
+> `src/rag/retriever_configD.py`. Config A y B descritas abajo ya no son reproducibles
+> tal cual: dependen de fuentes que ya no están en el índice (380,745 → 253,455 vectores).
+
 ---
 
 ## Config A — FAISS Puro (baseline)
