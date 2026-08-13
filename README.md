@@ -65,6 +65,16 @@ python src/bot/maternas_bot.py                    # Terminal 3 (opcional, Telegr
 
 UI disponible en `http://localhost:8501` · API docs en `http://localhost:8080/docs` · Bot Telegram: `python src/bot/maternas_bot.py`
 
+## Interfaz Streamlit
+
+Cada sesión nueva (pestaña/navegador nuevo) abre una ventana emergente (`st.dialog`) con el aviso de tratamiento de datos (`src/consent.py`) y botones **✅ Acepto** / **❌ No acepto**, antes de habilitar el chat:
+
+- **Acepta:** el diálogo se cierra y el chat queda habilitado normalmente.
+- **No acepta:** se muestra un mensaje de despedida y el envío de mensajes queda bloqueado.
+- **Sin decisión o tras rechazar:** cualquier intento de enviar un mensaje vuelve a abrir el diálogo en lugar de consultar la API — no se puede chatear hasta aceptar.
+
+El estado (`consent_status`) vive en `st.session_state`, por lo que es por sesión de navegador y se pierde al recargar la página o abrir una nueva pestaña.
+
 ## Bot Telegram
 
 El bot permite chatear con Maternas directamente desde Telegram usando polling.
@@ -73,18 +83,28 @@ El bot permite chatear con Maternas directamente desde Telegram usando polling.
 python src/bot/maternas_bot.py   # Terminal 3 (requiere API ya corriendo)
 ```
 
-Comandos: `/start` — bienvenida · `/help` — instrucciones · `/reset` — reinicia historial y da de baja del scheduler · `/stats` — estadísticas del bot.
+Comandos: `/start` — muestra el aviso de datos (nueva sesión) · `/help` — instrucciones · `/reset` — reinicia historial, da de baja del scheduler y vuelve a exigir el aviso · `/stats` — estadísticas del bot.
 
 Historial conversacional en RAM por usuario, indexado por un hash del `chat_id` de Telegram (no por el identificador real), persistido siempre en memoria (incluso durante una pregunta de clarificación) para no perder el contexto de síntomas entre turnos, y descartado al reiniciar el bot — nunca se escribe a disco. La respuesta de Maternas se envía como texto plano.
 
 El token se configura en `.env` como `TELEGRAM_BOT_TOKEN`.
 
+### Aviso de tratamiento de datos
+
+Toda sesión nueva (bot recién iniciado, `/start` o `/reset`) muestra primero el aviso de tratamiento de información (`src/consent.py`) con botones **✅ Acepto** / **❌ No acepto**, antes de procesar cualquier mensaje:
+
+- **Acepta:** se envía la confirmación y el mensaje de bienvenida; el chat queda habilitado.
+- **No acepta:** se envía un mensaje de despedida, se borra su historial y se da de baja del scheduler — la sesión queda cerrada.
+- **Sin decisión o tras rechazar:** cualquier mensaje nuevo del usuario vuelve a mostrarle el aviso en lugar de procesarse — no puede chatear hasta aceptar.
+
+El estado de aceptación vive solo en RAM (`consent_status`, indexado por el mismo hash que `histories`) y se pierde al reiniciar el bot.
+
 ### Privacidad
 
 - **Sin datos en reposo identificables:** el historial conversacional vive solo en RAM y se indexa por un hash SHA-256 del `chat_id`, nunca por el identificador real. El único dato persistido a disco (`active_users.json`, ver abajo) está cifrado.
-- **Sin nombres ni alias de Telegram:** el `first_name`/`username` de Telegram nunca se loguea ni se guarda — se usa una única vez para el saludo de `/start` y no vuelve a aparecer en ningún registro interno.
+- **Sin nombres ni alias de Telegram:** el `first_name`/`username` de Telegram nunca se loguea ni se guarda — se usa una única vez para el saludo posterior a la aceptación del aviso y no vuelve a aparecer en ningún registro interno.
 - **Logs sin contenido clínico:** los mensajes del usuario (que pueden incluir síntomas) nunca se escriben a un log — ni en errores del bot, ni al ejecutar la notificación de riesgo alto.
-- Detalle completo de la auditoría y las decisiones tomadas en `foragents/qa_technical.md` (Q29).
+- Detalle completo de la auditoría y las decisiones tomadas en `foragents/qa_technical.md` (Q29, Q30).
 
 ### Status Check Scheduler
 

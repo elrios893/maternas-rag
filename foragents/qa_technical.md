@@ -1368,4 +1368,40 @@ El status check scheduler (Q18 del README) requiere poder reencontrar a un usuar
 
 ---
 
+## Q30: ¿Cómo se implementó el aviso de tratamiento de datos al inicio de sesión?
+
+**Contexto:** Requisito explícito del usuario: toda sesión nueva en Streamlit y en Telegram debe empezar mostrando el aviso de tratamiento de información (texto resumido más abajo), exigir aceptación explícita antes de permitir chatear, despedirse y cerrar la sesión si se rechaza, y volver a mostrar el aviso ante cualquier mensaje nuevo mientras no haya aceptación vigente.
+
+### Texto del aviso (resumen del original, fuente única en `src/consent.py`)
+
+El texto original (política de tratamiento de datos del proyecto) se resumió conservando los cinco puntos obligatorios, con lo más relevante en MAYÚSCULAS: naturaleza de INVESTIGACIÓN/FASE EXPERIMENTAL y que no sustituye a un profesional; qué se conserva (NOMBRE PREFERIDO O ALIAS + CÓDIGO INTERNO) y qué nunca debe compartirse (nombre legal, documento, dirección, contraseñas, datos financieros); el propósito del procesamiento y que se aplica ANONIMIZACIÓN/SEUDONIMIZACIÓN en análisis o publicaciones; que la participación es VOLUNTARIA con derecho a no responder y a SOLICITAR EL RETIRO; y que es un PROTOTIPO no apto aún para producción. Se usa texto plano (sin markdown) para que se vea igual en Streamlit y Telegram, y para evitar el error `BadRequest: can't parse entities` de Telegram documentado en Q18.
+
+### Telegram (`src/bot/maternas_bot.py`)
+
+- `/start` y `/reset` limpian `consent_status` para ese usuario (hash) y envían el aviso con teclado inline (`✅ Acepto` / `❌ No acepto`, vía `CallbackQueryHandler`).
+- `consent_callback()`: **Acepto** → marca `"accepted"`, edita el mensaje a la confirmación y envía el saludo/bienvenida. **No acepto** → marca `"rejected"`, borra el historial en RAM y da de baja del scheduler (`remove_active_user`), edita el mensaje a la despedida.
+- `handle_message()` y `handle_non_text()` verifican `consent_status` al inicio: si no es `"accepted"` (nunca se pidió o fue rechazado), responden con el aviso de nuevo en vez de llamar a la API — el usuario no puede chatear hasta aceptar.
+- `consent_status: dict[str, str]` vive en RAM, indexado por el mismo hash que `histories` — no se persiste, se pierde al reiniciar el bot (= nueva sesión para todos).
+
+### Streamlit (`src/ui/app.py`)
+
+- `st.session_state.consent_status` (`None`/`"accepted"`/`"rejected"`), inicializado por sesión de navegador.
+- `@st.dialog(...)` muestra el aviso como ventana emergente con dos botones; se invoca en cada rerun mientras `consent_status != "accepted"`.
+- La sección de input del chat tiene tres ramas: API caída → aviso de API; `consent_status != "accepted"` → formulario "bloqueado" que, al enviarse, resetea `consent_status` a `None` y hace `st.rerun()` (reabre el diálogo) en vez de llamar a la API; `"accepted"` → flujo normal de chat sin cambios.
+- Al rechazar, se limpian `messages`/`meta` de la sesión (equivalente a "apagar" la sesión de chat).
+
+### Verificación
+
+- `python -c "import ast; ast.parse(...)"` sobre los tres archivos modificados — sin errores de sintaxis.
+- Import en frío de `src.bot.maternas_bot` — sin errores; se verificó estructuralmente el teclado inline (2 botones, `callback_data` correctos) y el texto del aviso.
+- `streamlit run src/ui/app.py --server.headless true` — arranca sin errores, responde HTTP 200. No se verificó visualmente en navegador dentro de esta sesión (sin acceso interactivo a Chrome); se recomienda una prueba manual antes de considerarlo cerrado.
+- Suite de tests (104 casos, sin relación directa con el bot/UI) sigue en verde tras los cambios.
+
+**Archivos modificados:**
+- `src/consent.py` — nuevo, texto único del aviso compartido por UI y bot
+- `src/bot/maternas_bot.py` — flujo de consentimiento, `CallbackQueryHandler`, gating en `handle_message`/`handle_non_text`, `/start`/`/reset` reinician `consent_status`
+- `src/ui/app.py` — `st.dialog` de consentimiento, gating del formulario de chat
+
+---
+
 *Última actualización: 12 de agosto de 2026*

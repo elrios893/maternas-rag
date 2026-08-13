@@ -3,11 +3,23 @@ app.py — Interfaz Streamlit del chatbot Maternas.
 
 Conecta al backend FastAPI en http://localhost:8080
 Arranca con: streamlit run src/ui/app.py
+
+Cada sesión nueva (nueva pestaña/navegador — session_state fresco) exige
+aceptar el aviso de tratamiento de datos (src/consent.py) en una ventana
+emergente antes de habilitar el chat. Si se rechaza, la sesión queda
+cerrada; cualquier intento de enviar un mensaje vuelve a mostrar el aviso.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
 import httpx
 import json
+
+from src.consent import ACCEPTED_TEXT, CONSENT_TEXT, FAREWELL_TEXT
 
 # ---------------------------------------------------------------------------
 # Config
@@ -77,6 +89,31 @@ if "meta" not in st.session_state:
     st.session_state.meta = []            # metadata del último turno
 if "api_ok" not in st.session_state:
     st.session_state.api_ok = None
+if "consent_status" not in st.session_state:
+    st.session_state.consent_status = None   # None | "accepted" | "rejected"
+
+# ---------------------------------------------------------------------------
+# Aviso de tratamiento de datos (ventana emergente)
+# ---------------------------------------------------------------------------
+
+@st.dialog("Aviso sobre tratamiento de información")
+def _consent_dialog() -> None:
+    st.text(CONSENT_TEXT)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("✅ Acepto", use_container_width=True):
+            st.session_state.consent_status = "accepted"
+            st.rerun()
+    with col_b:
+        if st.button("❌ No acepto", use_container_width=True):
+            st.session_state.consent_status = "rejected"
+            st.session_state.messages = []
+            st.session_state.meta = []
+            st.rerun()
+
+
+if st.session_state.consent_status != "accepted":
+    _consent_dialog()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,6 +285,28 @@ for msg in st.session_state.messages:
 
 if not st.session_state.api_ok:
     st.warning("La API no está disponible. Inicia el servidor para continuar.")
+elif st.session_state.consent_status != "accepted":
+    if st.session_state.consent_status == "rejected":
+        st.warning(FAREWELL_TEXT)
+    else:
+        st.info("Debes aceptar el aviso de tratamiento de información para poder chatear.")
+
+    with st.form("chat_form_locked", clear_on_submit=True):
+        col1, col2 = st.columns([8, 1])
+        with col1:
+            locked_input = st.text_input(
+                "Tu mensaje",
+                placeholder="Acepta el aviso de datos para poder escribirme",
+                label_visibility="collapsed",
+            )
+        with col2:
+            locked_submitted = st.form_submit_button("Enviar", use_container_width=True)
+
+    if locked_submitted and locked_input.strip():
+        # Cualquier intento de enviar un mensaje sin aceptación vigente
+        # vuelve a mostrar el aviso, en vez de procesar el mensaje.
+        st.session_state.consent_status = None
+        st.rerun()
 else:
     with st.form("chat_form", clear_on_submit=True):
         col1, col2 = st.columns([8, 1])

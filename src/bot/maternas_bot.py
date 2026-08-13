@@ -13,10 +13,15 @@ Arrancar:
     python src/bot/maternas_bot.py
 
 Comandos:
-    /start  — mensaje de bienvenida
+    /start  — muestra el aviso de tratamiento de datos (nueva sesion)
     /help   — instrucciones de uso
-    /reset  — reinicia la conversacion (borra historial y da de baja del scheduler)
+    /reset  — reinicia la conversacion y vuelve a exigir el aviso de datos
     /stats  — info del sistema (vectores indexados)
+
+Toda sesion nueva (bot recien iniciado, /start o /reset) exige aceptar el
+aviso de tratamiento de datos (src/consent.py) antes de procesar cualquier
+mensaje. Si el usuario no acepta, no se le responde como chat: cualquier
+mensaje nuevo vuelve a mostrarle el aviso.
 """
 
 from __future__ import annotations
@@ -30,9 +35,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from telegram import Update, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, Job
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    Job,
+    MessageHandler,
+    filters,
+)
 from src.settings import settings
+from src.consent import ACCEPTED_TEXT, CONSENT_TEXT, FAREWELL_TEXT
 
 from src.bot.active_users import (
     register as register_active_user,
@@ -87,6 +101,26 @@ logger = logging.getLogger(__name__)
 histories: dict[str, list[dict]] = {}
 
 # ---------------------------------------------------------------------------
+# Consentimiento de tratamiento de datos: { hash(user_id): "accepted" | "rejected" }
+# Toda nueva sesión (bot recién iniciado, /start o /reset) empieza sin
+# entrada aquí — se exige mostrar el aviso y obtener aceptación explícita
+# antes de procesar cualquier mensaje. En RAM únicamente, no se persiste.
+# ---------------------------------------------------------------------------
+
+consent_status: dict[str, str] = {}
+
+
+def _consent_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Acepto", callback_data="consent_accept"),
+        InlineKeyboardButton("❌ No acepto", callback_data="consent_reject"),
+    ]])
+
+
+async def _send_consent_prompt(update: Update) -> None:
+    await update.message.reply_text(CONSENT_TEXT, reply_markup=_consent_keyboard())
+
+# ---------------------------------------------------------------------------
 # Flag de salud de la API (para el scheduler)
 # ---------------------------------------------------------------------------
 # Se actualiza en cada handle_message(). Si la API no responde, el scheduler
@@ -121,23 +155,50 @@ async def call_chat(message: str, user_id: int) -> dict | None:
 # Handlers
 # ---------------------------------------------------------------------------
 
+WELCOME_TEXT = (
+    "Soy Maternas, un asistente de salud para madres gestantes.\n\n"
+    "Puedes preguntarme sobre:\n"
+    "• Síntomas del embarazo\n"
+    "• Nutrición y ejercicios\n"
+    "• Medicamentos y suplementos\n"
+    "• Lactancia y postparto\n"
+    "• Salud mental perinatal\n\n"
+    "Comandos:\n"
+    "/help  — más información\n"
+    "/reset — reiniciar conversación\n"
+    "/stats — estado del sistema\n\n"
+    "⚠️ No reemplazo a un médico — si tienes una emergencia, busca atención profesional."
+)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    await update.message.reply_text(
-        f"¡Hola {user.first_name}! 🤰\n\n"
-        "Soy Maternas, un asistente de salud para madres gestantes.\n\n"
-        "Puedes preguntarme sobre:\n"
-        "• Síntomas del embarazo\n"
-        "• Nutrición y ejercicios\n"
-        "• Medicamentos y suplementos\n"
-        "• Lactancia y postparto\n"
-        "• Salud mental perinatal\n\n"
-        "Comandos:\n"
-        "/help  — más información\n"
-        "/reset — reiniciar conversación\n"
-        "/stats — estado del sistema\n\n"
-        "⚠️ No reemplazo a un médico — si tienes una emergencia, busca atención profesional."
-    )
+    # /start siempre marca el inicio de una nueva sesión — se exige
+    # aceptar el aviso de tratamiento de datos de nuevo, aunque ya se
+    # hubiera aceptado antes.
+    key = _hash_id(update.effective_user.id)
+    consent_status.pop(key, None)
+    await _send_consent_prompt(update)
+
+
+async def consent_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+    key = _hash_id(user.id)
+
+    if query.data == "consent_accept":
+        consent_status[key] = "accepted"
+        await query.edit_message_text(ACCEPTED_TEXT, reply_markup=None)
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"¡Hola {user.first_name}! 🤰\n\n{WELCOME_TEXT}",
+        )
+    else:
+        consent_status[key] = "rejected"
+        histories.pop(key, None)
+        remove_active_user(user.id)
+        await query.edit_message_text(FAREWELL_TEXT, reply_markup=None)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -164,7 +225,9 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         del histories[key]
     # Dar de baja del scheduler — /reset también detiene los check-ins automáticos
     remove_active_user(user_id)
-    await update.message.reply_text("Conversación reiniciada. ¿En qué puedo ayudarte?")
+    # /reset también cuenta como nueva sesión — se vuelve a exigir el aviso
+    consent_status.pop(key, None)
+    await _send_consent_prompt(update)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -192,6 +255,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text    = update.message.text.strip()
 
     if not text:
+        return
+
+    # Sin aceptación vigente (nunca se pidió, o el usuario la rechazó antes):
+    # cualquier mensaje nuevo vuelve a mostrar el aviso en vez de procesarse.
+    if consent_status.get(_hash_id(user_id)) != "accepted":
+        await _send_consent_prompt(update)
         return
 
     # Indicador de escritura
@@ -236,6 +305,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(answer[:4000])
 
 async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if consent_status.get(_hash_id(update.effective_user.id)) != "accepted":
+        await _send_consent_prompt(update)
+        return
     await update.message.reply_text(
         "Solo entiendo mensajes de texto. Por favor escribe tu pregunta."
     )
@@ -357,6 +429,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CallbackQueryHandler(consent_callback, pattern="^consent_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(~filters.TEXT, handle_non_text))
     app.add_error_handler(error_handler)
