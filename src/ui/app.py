@@ -1,13 +1,16 @@
 """
-app.py — Interfaz Streamlit del chatbot Maternas.
+app.py — Interfaz Streamlit del chatbot Maternas y su panel de administración.
 
-Conecta al backend FastAPI en http://localhost:8080
+Conecta al backend FastAPI en settings.api_url (default http://localhost:8080).
 Arranca con: streamlit run src/ui/app.py
 
 Cada sesión nueva (nueva pestaña/navegador — session_state fresco) exige
-aceptar el aviso de tratamiento de datos (src/consent.py) en una ventana
-emergente antes de habilitar el chat. Si se rechaza, la sesión queda
-cerrada; cualquier intento de enviar un mensaje vuelve a mostrar el aviso.
+aceptar el aviso de tratamiento de datos (src/consent.py, vía
+src/ui/consent_gate.py) antes de poder usar CUALQUIER página del panel,
+no solo el chat: el gate corre acá, antes de st.navigation(), y detiene
+el script con st.stop() si no hay aceptación vigente. Si rechaza, la
+sesión queda cerrada; cualquier intento de enviar un mensaje vuelve a
+mostrar el aviso.
 """
 
 import sys
@@ -16,17 +19,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
-import httpx
-import json
 
-from src.consent import ACCEPTED_TEXT, CONSENT_TEXT, FAREWELL_TEXT
+from src.ui.client import check_health
+from src.ui.consent_gate import enforce_consent
+from src.ui.styles import STYLES
+from src.ui.views.chat_view import render_chat
+from src.ui.views.config_view import render_config
+from src.ui.views.dashboard_view import render_dashboard
+from src.ui.views.documents_view import render_documents
+from src.ui.views.metrics_view import render_metrics
 
 # ---------------------------------------------------------------------------
-# Config
+# Config — ÚNICA llamada a set_page_config de todo el proyecto. Una
+# segunda llamada, aunque sea desde una vista, lanza
+# StreamlitSetPageConfigMustBeFirstCommandError.
 # ---------------------------------------------------------------------------
-
-API_URL     = "http://localhost:8080"
-API_TIMEOUT = 60
 
 st.set_page_config(
     page_title="Maternas — Asistente de Salud",
@@ -35,49 +42,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Estilos
-# ---------------------------------------------------------------------------
-
-st.markdown("""
-<style>
-/* Burbuja usuario */
-.msg-user {
-    background: #e8f4fd;
-    border-radius: 16px 16px 4px 16px;
-    padding: 12px 16px;
-    margin: 6px 0;
-    max-width: 80%;
-    margin-left: auto;
-    color: #1a1a2e;
-}
-/* Burbuja asistente */
-.msg-assistant {
-    background: #f0f7f0;
-    border-radius: 16px 16px 16px 4px;
-    padding: 12px 16px;
-    margin: 6px 0;
-    max-width: 80%;
-    color: #1a1a2e;
-}
-/* Burbuja clarificación */
-.msg-clarification {
-    background: #fff8e6;
-    border: 1px solid #ffc107;
-    border-radius: 16px 16px 16px 4px;
-    padding: 12px 16px;
-    margin: 6px 0;
-    max-width: 80%;
-    color: #1a1a2e;
-}
-/* Badge de riesgo */
-.badge-low    { background:#d4edda; color:#155724; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
-.badge-medium { background:#fff3cd; color:#856404; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
-.badge-high   { background:#f8d7da; color:#721c24; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
-/* Pill de fuente */
-.source-pill  { background:#e9ecef; color:#495057; padding:2px 8px; border-radius:8px; font-size:0.78em; margin:2px; display:inline-block; }
-</style>
-""", unsafe_allow_html=True)
+# Estilos globales, antes del dispatch: aplican a todas las páginas, no
+# solo a la que los definía originalmente.
+st.markdown(STYLES, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -93,99 +60,17 @@ if "consent_status" not in st.session_state:
     st.session_state.consent_status = None   # None | "accepted" | "rejected"
 
 # ---------------------------------------------------------------------------
-# Aviso de tratamiento de datos (ventana emergente)
+# Gate de consentimiento — antes de la sonda de salud y de la navegación,
+# para que ninguna página quede alcanzable sin aceptación vigente.
 # ---------------------------------------------------------------------------
 
-@st.dialog("Aviso sobre tratamiento de información")
-def _consent_dialog() -> None:
-    st.text(CONSENT_TEXT)
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("✅ Acepto", use_container_width=True):
-            st.session_state.consent_status = "accepted"
-            st.rerun()
-    with col_b:
-        if st.button("❌ No acepto", use_container_width=True):
-            st.session_state.consent_status = "rejected"
-            st.session_state.messages = []
-            st.session_state.meta = []
-            st.rerun()
-
-
-if st.session_state.consent_status != "accepted":
-    _consent_dialog()
+enforce_consent()
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def check_health() -> dict | None:
-    try:
-        r = httpx.get(f"{API_URL}/health", timeout=5)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-    return None
-
-
-def call_chat(message: str, history: list) -> dict | None:
-    payload = {"message": message, "history": history, "k": 5}
-    try:
-        r = httpx.post(f"{API_URL}/chat", json=payload, timeout=API_TIMEOUT)
-        if r.status_code == 200:
-            return r.json()
-        st.error(f"API error {r.status_code}: {r.text[:200]}")
-    except httpx.ConnectError:
-        st.error("No se puede conectar con la API. ¿Está corriendo en el puerto 8080?")
-    except httpx.TimeoutException:
-        st.error("La API tardó demasiado. Intenta de nuevo.")
-    except Exception as e:
-        st.error(f"Error inesperado: {e}")
-    return None
-
-
-def risk_badge(level: str) -> str:
-    labels = {"low": "🟢 Bajo", "medium": "🟡 Medio", "high": "🔴 ALTO"}
-    css    = {"low": "badge-low", "medium": "badge-medium", "high": "badge-high"}
-    label  = labels.get(level, level)
-    klass  = css.get(level, "badge-low")
-    return f'<span class="{klass}">{label}</span>'
-
-
-def intent_label(intent: str) -> str:
-    labels = {
-        "control_prenatal":       "📅 Control prenatal",
-        "signos_de_alarma":       "🚨 Signos de alarma",
-        "sintomas_embarazo":      "🤰 Síntomas embarazo",
-        "postparto":              "👶 Postparto",
-        "lactancia":              "🍼 Lactancia",
-        "salud_mental_perinatal": "💙 Salud mental",
-        "medicamentos":           "💊 Medicamentos",
-        "nutricion":              "🥗 Nutrición",
-        "actividad_fisica":       "🏃 Actividad física",
-        "planificacion_familiar": "📋 Planificación familiar",
-        "consulta_administrativa":"📂 Administrativa",
-        "pregunta_fuera_de_alcance": "❓ Fuera de alcance",
-    }
-    return labels.get(intent, intent)
-
-
-def source_dataset_label(ds: str) -> str:
-    labels = {
-        "medmcqa":               "MedMCQA",
-        "medqa_us":              "MedQA-US",
-        "medqa_taiwan":          "MedQA-TW",
-        "medqa_mainland":        "MedQA-ML",
-        "multiclinsum_summary":  "Caso clínico (resumen)",
-        "multiclinsum_fulltext": "Caso clínico (texto)",
-        "textbook":              "Textbook médico",
-    }
-    return labels.get(ds, ds)
-
-
-# ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar — sonda de salud y licencias, visibles en todas las páginas.
+# Corre una sola vez por rerun, antes del dispatch: las páginas que leen
+# st.session_state.api_ok (el chat, por ejemplo) siempre lo encuentran
+# ya actualizado en este mismo rerun.
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
@@ -193,55 +78,25 @@ with st.sidebar:
     st.caption("Asistente de salud para madres gestantes")
     st.divider()
 
-    # Estado de la API
-    health = check_health()
-    if health and health.get("faiss_loaded"):
-        st.success(f"API conectada")
-        st.caption(f"📚 {health['total_vectors']:,} fragmentos médicos indexados")
-        st.caption(f"🧠 {health['model'].split('/')[-1]}")
-        st.session_state.api_ok = True
+    try:
+        health = check_health()
+        api_ok = bool(health.get("faiss_loaded"))
+    except Exception:
+        # Amplio a propósito (no solo httpx.HTTPError): un 200 con cuerpo
+        # no-JSON, por ejemplo, no debe tirar la app entera.
+        health = {}
+        api_ok = False
+
+    st.session_state.health = health
+    st.session_state.api_ok = api_ok
+
+    if api_ok:
+        st.success("API conectada")
+        st.caption(f"📚 {health.get('total_vectors', 0):,} fragmentos médicos indexados")
+        st.caption(f"🧠 {health.get('model', '').split('/')[-1]}")
     else:
         st.error("API no disponible")
         st.caption("Arranca el servidor con:\n```\npython -m uvicorn src.api.main:app --port 8080\n```")
-        st.session_state.api_ok = False
-
-    st.divider()
-
-    # Metadata del último turno
-    if st.session_state.meta:
-        m = st.session_state.meta[-1]
-        st.subheader("Último turno")
-
-        st.markdown(f"**Intención:** {intent_label(m.get('intent',''))}", unsafe_allow_html=True)
-        st.markdown(f"**Riesgo:** {risk_badge(m.get('risk_level','low'))}", unsafe_allow_html=True)
-        st.markdown(f"**Acción:** `{m.get('action','')}`")
-
-        if m.get("risk_flags"):
-            st.markdown("**Señales:**")
-            for flag in m["risk_flags"]:
-                st.markdown(f"- `{flag}`")
-
-        if m.get("sources"):
-            st.markdown("**Fuentes recuperadas:**")
-            for s in m["sources"]:
-                label = source_dataset_label(s.get("source_dataset",""))
-                score = s.get("score", 0)
-                path  = s.get("source_path", "")
-                pill_text = f"{label} · {score:.3f}" + (f" · {path}" if path else "")
-                st.markdown(
-                    f'<span class="source-pill">{pill_text}</span>',
-                    unsafe_allow_html=True,
-                )
-
-        if m.get("tokens_used"):
-            st.caption(f"Tokens usados: {m['tokens_used']:,}")
-
-    st.divider()
-
-    if st.button("🗑️ Limpiar conversación", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.meta     = []
-        st.rerun()
 
     st.divider()
 
@@ -250,106 +105,20 @@ with st.sidebar:
             "- **MedMCQA** — [Apache 2.0](https://huggingface.co/datasets/openlifescienceai/medmcqa)\n"
             "- **MedQA** — [MIT](https://github.com/jind11/MedQA) (Jin et al., 2020)\n"
             "- **MultiClinSum** — [CC-BY 4.0](https://zenodo.org/records/15517617) (BioASQ / CLEF 2025)\n"
-            "- **MaternaQA-es** — MIT (`minciencias-maternas/obstetrics-rag-benchmark`)\n\n"
+            "- **MaternaQA-es** — MIT (`minciencias-maternas/obstetrics-rag-benchmark`)\n"
+            "- **Documentos cargados** — bajo responsabilidad de quien administra el panel\n\n"
             "Detalle completo en `foragents/qa_technical.md` (Q28)."
         )
 
 # ---------------------------------------------------------------------------
-# Área principal — historial de chat
+# Navegación
 # ---------------------------------------------------------------------------
 
-st.title("Maternas — Asistente de Salud Materna")
-st.caption("Respondo preguntas sobre embarazo, parto, postparto y lactancia basándome en literatura médica.")
-
-# Mostrar historial
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.markdown(
-            f'<div class="msg-user">👤 {msg["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-    elif msg.get("clarification"):
-        st.markdown(
-            f'<div class="msg-clarification">🤰 💬 {msg["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f'<div class="msg-assistant">🤰 {msg["content"]}</div>',
-            unsafe_allow_html=True,
-        )
-
-# ---------------------------------------------------------------------------
-# Input del usuario
-# ---------------------------------------------------------------------------
-
-if not st.session_state.api_ok:
-    st.warning("La API no está disponible. Inicia el servidor para continuar.")
-elif st.session_state.consent_status != "accepted":
-    if st.session_state.consent_status == "rejected":
-        st.warning(FAREWELL_TEXT)
-    else:
-        st.info("Debes aceptar el aviso de tratamiento de información para poder chatear.")
-
-    with st.form("chat_form_locked", clear_on_submit=True):
-        col1, col2 = st.columns([8, 1])
-        with col1:
-            locked_input = st.text_input(
-                "Tu mensaje",
-                placeholder="Acepta el aviso de datos para poder escribirme",
-                label_visibility="collapsed",
-            )
-        with col2:
-            locked_submitted = st.form_submit_button("Enviar", use_container_width=True)
-
-    if locked_submitted and locked_input.strip():
-        # Cualquier intento de enviar un mensaje sin aceptación vigente
-        # vuelve a mostrar el aviso, en vez de procesar el mensaje.
-        st.session_state.consent_status = None
-        st.rerun()
-else:
-    with st.form("chat_form", clear_on_submit=True):
-        col1, col2 = st.columns([8, 1])
-        with col1:
-            user_input = st.text_input(
-                "Tu mensaje",
-                placeholder="Ej: ¿Es normal tener náuseas a las 10 semanas?",
-                label_visibility="collapsed",
-            )
-        with col2:
-            submitted = st.form_submit_button("Enviar", use_container_width=True)
-
-    if submitted and user_input.strip():
-        # Agregar mensaje del usuario al historial visual
-        st.session_state.messages.append({"role": "user", "content": user_input.strip()})
-
-        # Llamar a la API
-        with st.spinner("Consultando base de conocimiento médico..."):
-            history_payload = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages[:-1]   # sin el mensaje actual
-            ]
-            result = call_chat(user_input.strip(), history_payload)
-
-        if result:
-            answer = result.get("answer", "Sin respuesta")
-            needs_clarification = result.get("needs_clarification", False)
-
-            # Alerta visual para riesgo alto
-            if result.get("risk_level") == "high":
-                st.error("⚠️ Se detectaron señales de alarma. Busca atención médica de inmediato.")
-
-            # Mostrar respuesta con estilo según tipo
-            if needs_clarification:
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "clarification": True,
-                })
-            else:
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-
-            # Guardar metadata del turno
-            st.session_state.meta.append(result)
-
-            st.rerun()
+pg = st.navigation([
+    st.Page(render_chat, title="Chat", icon="💬", default=True),
+    st.Page(render_dashboard, title="Dashboard", icon="🏠"),
+    st.Page(render_documents, title="Documentos", icon="📁"),
+    st.Page(render_metrics, title="Métricas", icon="📊"),
+    st.Page(render_config, title="Configuración", icon="⚙️"),
+])
+pg.run()
