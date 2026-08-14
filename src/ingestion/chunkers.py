@@ -147,7 +147,10 @@ def chunk_recursive_split(doc: Document) -> List[Document]:
     valid_chunks = [c.strip() for c in raw_chunks if len(c.strip()) >= MIN_PARAGRAPH_CHARS]
 
     if not valid_chunks:
-        return [doc]
+        # Sin splits válidos: devolver el documento entero pero MARCADO,
+        # para que nunca falten chunk_index / is_chunk aguas abajo (a
+        # diferencia de devolver [doc] sin pasar por chunk_passthrough).
+        return chunk_passthrough(doc)
 
     return [
         _make_chunk(text, doc.metadata, idx)
@@ -176,7 +179,7 @@ def chunk_document(doc: Document) -> List[Document]:
     if source == "multiclinsum_fulltext":
         return chunk_paragraph_grouping(doc)
 
-    if source == "textbook":
+    if source in ("textbook", "upload"):
         return chunk_recursive_split(doc)
 
     # Fallback: si llega un source desconocido, no chunking

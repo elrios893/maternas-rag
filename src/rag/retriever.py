@@ -50,6 +50,7 @@ DENSE_SOURCES = {
     "medqa_taiwan",
     "medqa_mainland",
     "maternaqaes_lm",
+    "upload",   # documentos cargados desde el panel de administración
 }
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ SOURCE_LABELS = {
     "medqa_taiwan":            "Pregunta de examen medico (chino tradicional)",
     "medqa_mainland":          "Pregunta de examen medico (chino simplificado)",
     "maternaqaes_lm":          "Documento clinico obstetrico en espanol",
+    "upload":                  "Documento cargado por el equipo",
 }
 
 

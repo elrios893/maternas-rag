@@ -11,6 +11,11 @@ Arrancar:
 
 Docs interactivas:
     http://localhost:8000/docs
+
+Panel de administración (/documents*, /admin*): requiere ADMIN_API_TOKEN
+en .env (ver src/api/auth.py) y un único worker de uvicorn — el
+FAISSStore singleton y sus locks son por-proceso, así que con
+--workers > 1 cada proceso mantiene una copia divergente del índice.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from src.api.schemas import (
     HealthResponse,
     SourceDoc,
 )
+from src.api.routes_admin import router as admin_router
+from src.api.routes_documents import router as documents_router
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
 from src.rag.chain import chat as rag_chat
@@ -79,6 +86,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(documents_router)
+app.include_router(admin_router)
 
 
 # ---------------------------------------------------------------------------

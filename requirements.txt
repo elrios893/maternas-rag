@@ -11,6 +11,8 @@ starlette==0.41.3
 pydantic==2.10.3
 pydantic-settings==2.14.1
 python-dotenv==1.0.1
+python-multipart==0.0.20     # requerido por FastAPI para UploadFile/File(...)
+httpx==0.28.1                # cliente HTTP de la UI y de fastapi.testclient
 
 # --- LangChain ---
 langchain==0.3.13
@@ -38,14 +40,11 @@ cryptography==48.0.0
 # --- Scheduler ---
 apscheduler==3.10.4
 
-# --- Evaluation ---
+# --- Evaluación ---
 ragas==0.2.12
 
 # --- UI ---
 streamlit==1.41.1
-
-# --- Evaluación ---
-ragas==0.2.12
 
 # --- Data & Utils ---
 numpy==2.4.6

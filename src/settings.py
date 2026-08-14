@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # --- RAG ---
     rag_top_k: int = Field(5, env="RAG_TOP_K")
 
+    # --- Panel de administración ---
+    # Token compartido que protege todos los endpoints /documents* y /admin*.
+    # Si queda vacío, el panel se deshabilita por completo (fail-closed):
+    # los endpoints responden 503 en vez de quedar abiertos.
+    # Generar con:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+    admin_api_token: str = Field("", env="ADMIN_API_TOKEN")
+
+    # --- Maternas API (consumida por la UI de Streamlit) ---
+    api_url: str = Field("http://localhost:8080", env="API_URL")
+
     # --- Telegram Bot ---
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     log_level: str = Field("INFO", env="LOG_LEVEL")

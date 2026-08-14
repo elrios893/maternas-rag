@@ -11,7 +11,10 @@ No hay chunking aquí — ese es trabajo de chunkers.py.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
+import re
 import uuid
 
 
@@ -251,6 +254,41 @@ def format_textbook(filename: str, text: str) -> Document:
         "subject":        book_name,
         "language":       "en",
         "filename":       filename,
+    }
+
+    return Document(text=_clean(text), metadata=metadata)
+
+
+# ---------------------------------------------------------------------------
+# Formatter 8: Upload — documentos .txt cargados desde el panel de admin
+# ---------------------------------------------------------------------------
+# A diferencia de los demás formatters, el nombre de archivo lo controla
+# quien sube el documento, no un pipeline de ingestión confiable — por eso
+# se sanea antes de usarlo como doc_id.
+
+_SAFE_DOC_ID = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_doc_id(filename: str) -> str:
+    """Deriva un doc_id seguro del nombre de archivo subido.
+
+    Path(...).name descarta cualquier componente de ruta y el filtro deja
+    solo caracteres que no rompan la ruta de GET /documents/{doc_id}.
+    """
+    stem = Path(Path(filename).name).stem
+    return _SAFE_DOC_ID.sub("_", stem).strip("._-")
+
+
+def format_upload(filename: str, text: str) -> Document:
+    """Convierte un .txt subido por el panel de administración en un
+    Document indexable. Sin detector de idioma: 'es' es el idioma del
+    proyecto y el caso de uso esperado del panel."""
+    metadata = {
+        "source_dataset": "upload",
+        "doc_id":         safe_doc_id(filename),
+        "language":       "es",
+        "filename":       Path(filename).name,
+        "uploaded_at":    datetime.utcnow().isoformat() + "Z",
     }
 
     return Document(text=_clean(text), metadata=metadata)
