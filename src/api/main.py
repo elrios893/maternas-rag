@@ -27,8 +27,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import json
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from src.api.schemas import (
     ChatRequest,
@@ -42,7 +45,8 @@ from src.api.routes_admin import router as admin_router
 from src.api.routes_documents import router as documents_router
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
-from src.rag.chain import chat as rag_chat
+from src.rag.chain import chat as rag_chat, chat_stream as rag_chat_stream
+from src.rag.citations import document_name
 from src.rag.retriever import _get_store, source_path
 from src.settings import settings
 
@@ -115,6 +119,19 @@ def health() -> HealthResponse:
         )
 
 
+def _source_doc(s: dict) -> SourceDoc:
+    return SourceDoc(
+        score=s.get("score", 0.0),
+        source_dataset=s.get("source_dataset", ""),
+        language=s.get("language", ""),
+        doc_id=s.get("doc_id"),
+        chunk_id=s.get("chunk_id"),
+        source_path=source_path(s),
+        document_name=document_name(s),
+        pages=s.get("pages") or [],
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /chat
 # ---------------------------------------------------------------------------
@@ -141,16 +158,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         logger.error(f"[/chat] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)[:120]}")
 
-    sources = []
-    for s in result.sources:
-        sources.append(SourceDoc(
-            score=s.get("score", 0.0),
-            source_dataset=s.get("source_dataset", ""),
-            language=s.get("language", ""),
-            doc_id=s.get("doc_id"),
-            chunk_id=s.get("chunk_id"),
-            source_path=source_path(s),
-        ))
+    sources = [_source_doc(s) for s in result.sources]
 
     return ChatResponse(
         answer=result.answer,
@@ -161,6 +169,53 @@ def chat(request: ChatRequest) -> ChatResponse:
         sources=sources,
         reasoning=result.reasoning,
         tokens_used=result.tokens_used,
+        notified=result.notified,
+        needs_clarification=result.needs_clarification,
+        clarification_question=result.clarification_question,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /chat/stream
+# ---------------------------------------------------------------------------
+
+@app.post("/chat/stream", tags=["chatbot"])
+def chat_stream(request: ChatRequest) -> StreamingResponse:
+    """
+    Igual que POST /chat, pero como NDJSON: una línea JSON por evento
+    (status → meta → delta* → done, o error), para que la UI pueda
+    mostrar la respuesta a medida que se genera en vez de esperar el
+    turno completo.
+
+    Declarado `def` (no `async def`) a propósito: FastAPI corre un
+    endpoint sync en el threadpool, así que el cliente Groq síncrono de
+    src.rag.chain no bloquea el event loop mientras transmite.
+
+    El bot de Telegram y el pipeline de evaluación siguen usando POST
+    /chat sin cambios — este endpoint es aditivo.
+    """
+    history = [{"role": m.role, "content": m.content} for m in request.history]
+
+    def _events():
+        try:
+            for event in rag_chat_stream(
+                query=request.message,
+                history=history,
+                k=request.k,
+            ):
+                if event.get("type") == "meta":
+                    event = {**event, "sources": [
+                        _source_doc(s).model_dump() for s in event.get("sources", [])
+                    ]}
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as e:
+            logger.error(f"[/chat/stream] Error: {e}", exc_info=True)
+            yield json.dumps({"type": "error", "detail": str(e)[:200]}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        _events(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
     )
 
 

@@ -37,6 +37,8 @@ class SourceDoc(BaseModel):
     doc_id:         Optional[str] = None
     chunk_id:       Optional[str] = None
     source_path:    str = ""
+    document_name:  str = ""
+    pages:          list[int] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):

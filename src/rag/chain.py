@@ -26,11 +26,11 @@ Uso básico:
 from __future__ import annotations
 
 import logging
-import re
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -38,7 +38,8 @@ from groq import Groq
 
 from src.classifiers.intent_classifier import classify_intent, IntentResult
 from src.classifiers.risk_detector import detect_risk, RiskResult
-from src.rag.retriever import retrieve, format_context, source_label, source_path
+from src.rag.citations import build_reference_block, format_context
+from src.rag.retriever import retrieve
 from src.settings import settings
 from src.skills import ToolRegistry
 import src.skills.notifier  # noqa: F401 — registra tools del notifier
@@ -82,17 +83,19 @@ BASE_SYSTEM_PROMPT = (
     "- Responde siempre en espanol.\n\n"
 
     "SOBRE LAS FUENTES:\n"
-    "- Si un fragmento contiene informacion util para tu respuesta, cita [n] "
-    "al final de esa oracion especifica. Solo cita si el fragmento realmente "
-    "dice lo que afirmas — nunca cites para aparentar respaldo.\n"
-    "- Si los fragmentos no contienen la informacion exacta pero si informacion "
+    "- Cada fuente del contexto viene encabezada por [n] y el nombre del "
+    "documento. Si una fuente respalda lo que afirmas, cita [n] al final "
+    "de esa oracion especifica. Solo cita si la fuente realmente dice lo "
+    "que afirmas — nunca cites para aparentar respaldo.\n"
+    "- Nunca escribas la palabra 'Fragmento' ni menciones numeros de "
+    "fragmento — [n] es la unica referencia que debes usar. Nunca "
+    "repitas el nombre del documento dentro del texto de tu respuesta.\n"
+    "- Si las fuentes no contienen la informacion exacta pero si informacion "
     "relacionada, usala como apoyo y complementa con conocimiento medico general "
     "bien establecido. En ese caso no es necesario aclarar 'no tengo fuentes' — "
     "simplemente responde con naturalidad.\n"
-    "- Si los fragmentos no tienen absolutamente nada relevante, responde desde "
-    "conocimiento general sin citar [n].\n"
-    "- Los fragmentos marcados [caso clinico] son ejemplos de pacientes reales. "
-    "Usaos si el caso ilustra o confirma algo relevante para la pregunta.\n\n"
+    "- Si las fuentes no tienen absolutamente nada relevante, responde desde "
+    "conocimiento general sin citar [n].\n\n"
 
     "LIMITES:\n"
     "- No eres medico y no reemplazas una consulta. Cuando corresponda, "
@@ -299,7 +302,119 @@ def _build_messages(
 
 
 # ---------------------------------------------------------------------------
-# Función pública principal
+# Clasificación del turno (intent + riesgo + clarificación) — compartida
+# entre chat() y chat_stream() para que no puedan divergir.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TurnClassification:
+    intent_result:  IntentResult
+    risk_result:    RiskResult
+    needs_clarification: bool = False
+    clarification_question: str = ""
+
+
+def _classify_turn(query: str, history: list[dict]) -> TurnClassification:
+    # 1. Clasificar intención
+    intent_result: IntentResult = classify_intent(query, conversation_history=history)
+    logger.info(f"[Chain] intent={intent_result.intent} conf={intent_result.confidence:.2f}")
+
+    # 2. Detectar riesgo (combina síntomas de turnos previos con el mensaje actual)
+    risk_result: RiskResult = detect_risk(query, intent=intent_result.intent, history=history)
+    logger.info(f"[Chain] risk={risk_result.level} action={risk_result.action}")
+
+    # 2b. Clarificación — pedir más contexto si la query es vaga
+    if _should_clarify(query, intent_result.intent, risk_result.level, history):
+        clarification_q = _generate_clarification(query, intent_result.intent, risk_result.level)
+        logger.info(f"[Chain] Clarificacion activada para intent={intent_result.intent}")
+        return TurnClassification(
+            intent_result=intent_result,
+            risk_result=risk_result,
+            needs_clarification=True,
+            clarification_question=clarification_q,
+        )
+
+    return TurnClassification(intent_result=intent_result, risk_result=risk_result)
+
+
+# ---------------------------------------------------------------------------
+# Notificación por riesgo clínico
+# ---------------------------------------------------------------------------
+
+def _run_notification(query: str, intent: str, risk_result: RiskResult) -> bool:
+    """Decide si notificar a un clínico y, si corresponde, dispara el email.
+
+    high → notifica siempre. medium → una llamada barata al LLM decide.
+    Devuelve si se notificó, para popular ChatResponse.notified.
+    """
+    if risk_result.level == "high":
+        ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
+                             intent=intent, reasoning=risk_result.reasoning,
+                             flags=risk_result.flags)
+        return True
+
+    if risk_result.level != "medium":
+        return False
+
+    notify_prompt = (
+        "Eres un clasificador medico. Decide si este mensaje de una paciente "
+        "amerita notificar a un clinico para revision.\n\n"
+        "Contexto:\n"
+        f"- Nivel de riesgo: {risk_result.level}\n"
+        f"- Intencion: {intent}\n"
+        f"- Razonamiento: {risk_result.reasoning}\n"
+        f"- Banderas: {risk_result.flags}\n\n"
+        f"Mensaje de la paciente:\n{query}\n\n"
+        "Responde SOLO con 'YES' si un medico debe revisar este caso, "
+        "o 'NO' si no es necesario."
+    )
+    client = _get_client()
+    try:
+        resp = client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[{"role": "user", "content": notify_prompt}],
+            temperature=0,
+            max_tokens=10,
+        )
+        decision = resp.choices[0].message.content.strip().upper()
+        if "YES" in decision:
+            ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
+                                 intent=intent, reasoning=risk_result.reasoning,
+                                 flags=risk_result.flags)
+            return True
+    except Exception as e:
+        logger.warning(f"[Chain] Error en decision de notificacion medium: {e}")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Retrieval + construcción del prompt — compartido entre chat() y
+# chat_stream().
+# ---------------------------------------------------------------------------
+
+def _retrieve_and_build(
+    query: str,
+    history: list[dict],
+    risk_result: RiskResult,
+    k: int | None,
+) -> tuple[list[dict], list[dict]]:
+    # Para preguntas fuera de alcance recuperamos igualmente por si acaso
+    docs = retrieve(query, k=k)
+    context = format_context(docs)
+    logger.info(f"[Chain] {len(docs)} fragmentos recuperados")
+
+    system_prompt = _build_system_prompt(risk_result)
+    messages      = _build_messages(query, context, history, system_prompt)
+    return docs, messages
+
+
+def _docs_to_sources(docs: list[dict]) -> list[dict]:
+    """Fuentes sin el texto completo, para no saturar el objeto de retorno."""
+    return [{k: v for k, v in doc.items() if k != "text"} for doc in docs]
+
+
+# ---------------------------------------------------------------------------
+# Función pública principal (no streaming)
 # ---------------------------------------------------------------------------
 
 def chat(
@@ -330,80 +445,24 @@ def chat(
             action="educational_answer",
         )
 
-    # 1. Clasificar intención
-    intent_result: IntentResult = classify_intent(query, conversation_history=history)
-    logger.info(f"[Chain] intent={intent_result.intent} conf={intent_result.confidence:.2f}")
+    turn = _classify_turn(query, history)
+    intent_result, risk_result = turn.intent_result, turn.risk_result
 
-    # 2. Detectar riesgo (combina síntomas de turnos previos con el mensaje actual)
-    risk_result: RiskResult = detect_risk(query, intent=intent_result.intent, history=history)
-    logger.info(f"[Chain] risk={risk_result.level} action={risk_result.action}")
-
-    # ---------------------------------------------------------------------------
-    # 2b. Clarificación — pedir más contexto si la query es vaga
-    # ---------------------------------------------------------------------------
-    if _should_clarify(query, intent_result.intent, risk_result.level, history):
-        clarification_q = _generate_clarification(query, intent_result.intent, risk_result.level)
-        logger.info(f"[Chain] Clarificacion activada para intent={intent_result.intent}")
+    if turn.needs_clarification:
         return ChatResponse(
-            answer=clarification_q,
+            answer=turn.clarification_question,
             intent=intent_result.intent,
             risk_level=risk_result.level,
             action=risk_result.action,
             risk_flags=risk_result.flags,
             reasoning=risk_result.reasoning,
             needs_clarification=True,
-            clarification_question=clarification_q,
+            clarification_question=turn.clarification_question,
         )
 
-    # ---------------------------------------------------------------------------
-    # Notificación por riesgo clínico
-    # ---------------------------------------------------------------------------
+    notified = _run_notification(query, intent_result.intent, risk_result)
 
-    NOTIFY_PROMPT = (
-        "Eres un clasificador medico. Decide si este mensaje de una paciente "
-        "amerita notificar a un clinico para revision.\n\n"
-        "Contexto:\n"
-        f"- Nivel de riesgo: {risk_result.level}\n"
-        f"- Intencion: {intent_result.intent}\n"
-        f"- Razonamiento: {risk_result.reasoning}\n"
-        f"- Banderas: {risk_result.flags}\n\n"
-        f"Mensaje de la paciente:\n{query}\n\n"
-        "Responde SOLO con 'YES' si un medico debe revisar este caso, "
-        "o 'NO' si no es necesario."
-    )
-    notified = False
-    if risk_result.level == "high":
-        ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
-                             intent=intent_result.intent, reasoning=risk_result.reasoning,
-                             flags=risk_result.flags)
-        notified = True
-    elif risk_result.level == "medium":
-        client = _get_client()
-        try:
-            resp = client.chat.completions.create(
-                model=settings.groq_model,
-                messages=[{"role": "user", "content": NOTIFY_PROMPT}],
-                temperature=0,
-                max_tokens=10,
-            )
-            decision = resp.choices[0].message.content.strip().upper()
-            if "YES" in decision:
-                ToolRegistry.execute("notify_risk", query=query, risk_level=risk_result.level,
-                                     intent=intent_result.intent, reasoning=risk_result.reasoning,
-                                     flags=risk_result.flags)
-                notified = True
-        except Exception as e:
-            logger.warning(f"[Chain] Error en decision de notificacion medium: {e}")
-
-    # 3. Recuperar fragmentos relevantes
-    # Para preguntas fuera de alcance recuperamos igualmente por si acaso
-    docs = retrieve(query, k=k)
-    context = format_context(docs)
-    logger.info(f"[Chain] {len(docs)} fragmentos recuperados")
-
-    # 4. Construir prompt y llamar al LLM
-    system_prompt = _build_system_prompt(risk_result)
-    messages      = _build_messages(query, context, history, system_prompt)
+    docs, messages = _retrieve_and_build(query, history, risk_result, k)
 
     client = _get_client()
     tokens_used = 0
@@ -418,26 +477,13 @@ def chat(
         answer      = response.choices[0].message.content.strip()
         tokens_used = response.usage.total_tokens if response.usage else 0
 
-        # 5. Detectar citas [n] en la respuesta y construir referencias
-        cited = set(int(m) for m in re.findall(r'\[(\d+)\]', answer))
-        if cited and docs:
-            refs: list[str] = []
-            for i, doc in enumerate(docs, 1):
-                if i in cited:
-                    source = doc.get("source_dataset", "desconocido")
-                    refs.append(f"[{i}] {source_label(source)} — {source_path(doc)}")
-            if refs:
-                answer += "\n\n---\n" + "\n".join(refs)
+        ref_block = build_reference_block(answer, docs)
+        if ref_block:
+            answer += "\n\n" + ref_block
 
     except Exception as e:
         logger.error(f"[Chain] Error generando respuesta: {e}")
         answer = _fallback_answer(risk_result)
-
-    # 5. Formatear fuentes (sin texto completo para no saturar el objeto)
-    sources = [
-        {k: v for k, v in doc.items() if k != "text"}
-        for doc in docs
-    ]
 
     return ChatResponse(
         answer=answer,
@@ -445,11 +491,142 @@ def chat(
         risk_level=risk_result.level,
         action=risk_result.action,
         risk_flags=risk_result.flags,
-        sources=sources,
+        sources=_docs_to_sources(docs),
         reasoning=risk_result.reasoning,
         tokens_used=tokens_used,
         notified=notified,
     )
+
+
+# ---------------------------------------------------------------------------
+# Función pública — streaming
+# ---------------------------------------------------------------------------
+
+def chat_stream(
+    query: str,
+    history: list[dict] | None = None,
+    k: int | None = None,
+) -> Iterator[dict]:
+    """
+    Igual que chat(), pero emite el turno como una secuencia de eventos
+    (dicts) en vez de devolver un único ChatResponse al final:
+
+        {"type": "status", "stage": "classifying" | "retrieving" | "generating"}
+        {"type": "meta", "intent", "risk_level", "action", "risk_flags",
+                  "sources", "needs_clarification"}
+        {"type": "delta", "text": "..."}                 # uno por token
+        {"type": "done", "answer", "tokens_used", "notified"}
+        {"type": "error", "detail": "..."}
+
+    El caller (src/api/main.py) serializa cada evento a una línea NDJSON.
+    La notificación de riesgo clínico corre en un hilo aparte, en paralelo
+    con la generación, en vez de bloquear antes de ella.
+    """
+    if history is None:
+        history = []
+
+    if not query or not query.strip():
+        yield {"type": "meta", "intent": "pregunta_fuera_de_alcance", "risk_level": "low",
+               "action": "educational_answer", "risk_flags": [], "sources": [],
+               "needs_clarification": False}
+        yield {"type": "delta", "text": "No recibí ningún mensaje. ¿En qué puedo ayudarte?"}
+        yield {"type": "done", "answer": "No recibí ningún mensaje. ¿En qué puedo ayudarte?",
+               "tokens_used": 0, "notified": False}
+        return
+
+    yield {"type": "status", "stage": "classifying"}
+    turn = _classify_turn(query, history)
+    intent_result, risk_result = turn.intent_result, turn.risk_result
+
+    if turn.needs_clarification:
+        yield {"type": "meta", "intent": intent_result.intent, "risk_level": risk_result.level,
+               "action": risk_result.action, "risk_flags": risk_result.flags, "sources": [],
+               "needs_clarification": True}
+        yield {"type": "delta", "text": turn.clarification_question}
+        yield {"type": "done", "answer": turn.clarification_question,
+               "tokens_used": 0, "notified": False}
+        return
+
+    # Notificación en paralelo: arranca ahora, se recoge recién al final.
+    notify_result: dict[str, bool] = {}
+
+    def _notify_worker() -> None:
+        notify_result["notified"] = _run_notification(query, intent_result.intent, risk_result)
+
+    notify_thread = threading.Thread(target=_notify_worker, daemon=True)
+    notify_thread.start()
+
+    yield {"type": "status", "stage": "retrieving"}
+    docs, messages = _retrieve_and_build(query, history, risk_result, k)
+
+    sources = _docs_to_sources(docs)
+    yield {
+        "type": "meta",
+        "intent": intent_result.intent,
+        "risk_level": risk_result.level,
+        "action": risk_result.action,
+        "risk_flags": risk_result.flags,
+        "sources": sources,
+        "needs_clarification": False,
+    }
+
+    yield {"type": "status", "stage": "generating"}
+    client = _get_client()
+    answer_parts: list[str] = []
+    tokens_used = 0
+
+    try:
+        stream = client.chat.completions.create(
+            model=settings.groq_model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=800,
+            stream=True,
+        )
+        for chunk in stream:
+            # groq==0.13.1 no acepta stream_options={"include_usage": True}
+            # (SDK viejo): el uso de tokens en modo streaming viaja en el
+            # chunk final bajo x_groq.usage, no bajo chunk.usage.
+            usage = getattr(chunk, "usage", None) or getattr(
+                getattr(chunk, "x_groq", None), "usage", None
+            )
+            if usage is not None:
+                tokens_used = getattr(usage, "total_tokens", 0) or 0
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            text = getattr(delta, "content", None)
+            if text:
+                answer_parts.append(text)
+                yield {"type": "delta", "text": text}
+
+    except Exception as e:
+        logger.error(f"[Chain] Error en streaming: {e}")
+        if not answer_parts:
+            # Nada transmitido todavía: degradar a la respuesta de emergencia
+            # en vez de dejar a la usuaria sin nada.
+            fallback = _fallback_answer(risk_result)
+            yield {"type": "delta", "text": fallback}
+            notify_thread.join(timeout=10)
+            yield {"type": "done", "answer": fallback, "tokens_used": 0,
+                   "notified": notify_result.get("notified", False)}
+            return
+        notify_thread.join(timeout=10)
+        yield {"type": "error", "detail": str(e)[:200]}
+        return
+
+    answer = "".join(answer_parts).strip()
+    ref_block = build_reference_block(answer, docs)
+    if ref_block:
+        answer += "\n\n" + ref_block
+
+    notify_thread.join(timeout=10)
+    yield {
+        "type": "done",
+        "answer": answer,
+        "tokens_used": tokens_used,
+        "notified": notify_result.get("notified", False),
+    }
 
 
 def _fallback_answer(risk: RiskResult) -> str:
