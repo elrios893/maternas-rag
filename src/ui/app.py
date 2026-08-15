@@ -26,6 +26,7 @@ from src.ui.consent_gate import enforce_consent
 from src.ui.styles import STYLES
 from src.ui.views.chat_view import render_chat
 from src.ui.views.config_view import render_config
+from src.ui.views.console_view import render_console
 from src.ui.views.dashboard_view import render_dashboard
 from src.ui.views.documents_view import render_documents
 from src.ui.views.metrics_view import render_metrics
@@ -131,6 +132,7 @@ if is_admin():
         st.Page(render_documents, title="Documentos", icon="📁"),
         st.Page(render_metrics, title="Métricas", icon="📊"),
         st.Page(render_config, title="Configuración", icon="⚙️"),
+        st.Page(render_console, title="Consola", icon="🖥️"),
     ]
 
 pg = st.navigation(pages)

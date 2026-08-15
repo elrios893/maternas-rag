@@ -146,3 +146,67 @@ def get_admin_config(admin_token: str) -> dict:
     r = httpx.get(f"{API_URL}/admin/config", headers=_admin_headers(admin_token), timeout=10)
     r.raise_for_status()
     return r.json()
+
+
+def update_admin_config(admin_token: str, **fields) -> dict:
+    """Solo manda los campos presentes en `fields` — el caller decide
+    qué cambió (ver config_view.py, que diffea contra el valor cargado
+    antes de armar el payload)."""
+    r = httpx.patch(
+        f"{API_URL}/admin/config",
+        json=fields,
+        headers=_admin_headers(admin_token),
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def get_admin_logs(admin_token: str, limit: int = 200) -> dict:
+    r = httpx.get(
+        f"{API_URL}/admin/logs",
+        params={"limit": limit},
+        headers=_admin_headers(admin_token),
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+# ---------------------------------------------------------------------------
+# Bot de Telegram (requieren X-Admin-Token)
+# ---------------------------------------------------------------------------
+
+def get_bot_status(admin_token: str) -> dict:
+    r = httpx.get(f"{API_URL}/admin/bot/status", headers=_admin_headers(admin_token), timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def start_bot(admin_token: str) -> dict:
+    r = httpx.post(f"{API_URL}/admin/bot/start", headers=_admin_headers(admin_token), timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def stop_bot(admin_token: str) -> dict:
+    r = httpx.post(f"{API_URL}/admin/bot/stop", headers=_admin_headers(admin_token), timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def restart_bot(admin_token: str) -> dict:
+    r = httpx.post(f"{API_URL}/admin/bot/restart", headers=_admin_headers(admin_token), timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_bot_logs(admin_token: str, limit: int = 200) -> dict:
+    r = httpx.get(
+        f"{API_URL}/admin/bot/logs",
+        params={"limit": limit},
+        headers=_admin_headers(admin_token),
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()
