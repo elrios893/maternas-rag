@@ -36,3 +36,6 @@ no_repo/
 
 # Registro de usuarios activos del bot (datos clinicos reales — nunca versionar)
 active_users.json
+
+# Node (script de generación de PDF de la documentación)
+node_modules/

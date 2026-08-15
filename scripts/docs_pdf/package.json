@@ -1,0 +1,15 @@
+{
+  "name": "docs-pdf",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Genera un PDF con estilo consistente a partir de un Markdown del proyecto (docs/*.md), incluyendo render de diagramas Mermaid.",
+  "type": "module",
+  "scripts": {
+    "build": "node generate.mjs"
+  },
+  "dependencies": {
+    "marked": "^12.0.0",
+    "mermaid": "^10.9.0",
+    "puppeteer-core": "^22.0.0"
+  }
+}
