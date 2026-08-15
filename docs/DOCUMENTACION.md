@@ -2,16 +2,15 @@
 
 > **Proyecto:** Maternas-RAG-Chatbot  
 > **Convocatoria:** 890 Minciencias · Institución Universitaria de Envigado  
-> **Última actualización:** Julio 2026
+> **Última actualización:** Agosto 2026
 
-> ⚠️ **Nota de actualización (agosto 2026):** `textbook` y `multiclinsum_*` fueron
+> ⚠️ **Nota de actualización:** `textbook` y `multiclinsum_*` fueron
 > removidos del índice FAISS por riesgo de licencia (ver `foragents/qa_technical.md`
 > Q28/Q31). `src/rag/bm25_index.py` fue eliminado (ya no hay BM25 en producción —
 > el retrieval es 100% denso FAISS). La config activa en producción es **Config D**
-> (`medmcqa` + `medqa_*` + `maternaqaes_lm`, 253,455 vectores), no Config C/B como
-> describen algunas secciones históricas de este documento más abajo.
+> (`medmcqa` + `medqa_*` + `maternaqaes_lm`, 253,455 vectores).
 >
-> **Segunda nota (agosto 2026):** desde la nota anterior se agregó un **panel de
+> **Segunda nota:** desde la nota anterior se agregó un **panel de
 > administración completo** (Dashboard, Documentos, Métricas, Configuración,
 > Consola — protegido por `X-Admin-Token`), gestión en vivo de documentos del
 > índice FAISS (alta/baja/desactivación), **configuración editable en caliente**
