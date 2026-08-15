@@ -236,6 +236,13 @@ def _get_client() -> Groq:
     return _groq_client
 
 
+def reset_client() -> None:
+    """Fuerza reconstruir el cliente Groq en la próxima llamada — usado
+    cuando GROQ_API_KEY cambia en caliente desde el panel admin."""
+    global _groq_client
+    _groq_client = None
+
+
 def _llm_risk(message: str, history: Optional[list[dict]] = None) -> RiskResult:
     """Evalúa riesgo usando el LLM de Groq, considerando síntomas de turnos previos."""
     client = _get_client()

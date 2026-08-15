@@ -118,6 +118,13 @@ def _get_client() -> Groq:
     return _groq_client
 
 
+def reset_client() -> None:
+    """Fuerza reconstruir el cliente Groq en la próxima llamada — usado
+    cuando GROQ_API_KEY cambia en caliente desde el panel admin."""
+    global _groq_client
+    _groq_client = None
+
+
 # ---------------------------------------------------------------------------
 # Clasificador principal
 # ---------------------------------------------------------------------------
