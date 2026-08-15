@@ -143,6 +143,14 @@ query → classify_intent() → detect_risk()
 - **Riesgo MEDIUM** → respuesta con recomendación médica (LLM decide si notificar)
 - **Riesgo LOW** → respuesta educativa con citas a la fuente
 
+## Streaming y citas por documento
+
+`POST /chat/stream` devuelve la respuesta como NDJSON (una línea JSON por evento: `status` → `meta` → `delta`* → `done`, o `error`), y la UI de Streamlit la renderiza token a token en vez de esperar el turno completo. La detección/notificación de riesgo corre en paralelo en un hilo de fondo, sin bloquear la generación del texto.
+
+Las citas dentro de la respuesta usan marcadores numerados `[n]` en el texto, con una lista agrupada **"Fuentes:"** al final que muestra el **nombre del documento o dataset de origen** de cada fragmento — no `fragmento [n]` genérico. `src/rag/citations.py` resuelve ese nombre (`document_name()`): usa el archivo fuente cuando existe, y para el ~73% del índice sin archivo asociado (MedMCQA/MedQA) degrada a un nombre descriptivo tipo `"MedMCQA · {subject} — {topic}"`.
+
+`POST /chat` (sin streaming) sigue funcionando igual que antes — lo sigue usando el bot de Telegram y el pipeline de evaluación — y ahora también expone `notified`/`needs_clarification`/`clarification_question` en la respuesta.
+
 ## Retrieval
 
 El índice tiene 253,455 vectores de tres fuentes (`medmcqa`, `medqa_us`/`medqa_taiwan`/`medqa_mainland`, `maternaqaes_lm`), todas recuperadas por búsqueda densa FAISS (similitud coseno). `textbook` y `multiclinsum_*` fueron removidos del índice por riesgo de licencia — ver `foragents/qa_technical.md` (Q31).
@@ -181,15 +189,48 @@ src/skills/mi_skill/
 
 Registrar en `ToolRegistry` y ejecutar desde `chain.py` vía `ToolRegistry.execute("tool_name", ...)`.
 
+## Panel de administración
+
+El panel (`/documents*`, `/admin*`, protegido por `X-Admin-Token`, ver `.env` → `ADMIN_API_TOKEN`) tiene, además de gestión de documentos y evaluaciones, dos secciones para operar el sistema sin tocar `.env` a mano ni la terminal:
+
+### Configuración editable
+
+10 variables se pueden editar desde la página **Configuración** de Streamlit:
+
+| Variable | Aplica |
+|---|---|
+| `GROQ_MODEL`, `GROQ_API_KEY` | En caliente, sin reiniciar nada |
+| `NOTIFIER_ENABLED`, `NOTIFIER_EMAIL_TO`, `NOTIFIER_SMTP_USER`, `NOTIFIER_SMTP_PASSWORD` | En caliente, sin reiniciar nada |
+| `TELEGRAM_BOT_TOKEN`, `STATUS_CHECK_INTERVAL_LOW/MEDIUM/HIGH_SECONDS` | Requiere reiniciar el bot (botón en la misma página) |
+
+Los primeros 6 campos los lee el propio proceso de la API en cada llamada, así que `PATCH /admin/config` los aplica mutando el singleton `settings` en memoria — visible al instante desde cualquier módulo — y los persiste en `.env` con `dotenv.set_key()` para que sobrevivan un reinicio. `GROQ_API_KEY` además fuerza reconstruir los tres clientes Groq cacheados (`chain.py`, `intent_classifier.py`, `risk_detector.py`) vía `reset_client()`. Los últimos 4 solo los lee el proceso del bot de Telegram al arrancar (es otro intérprete de Python) — por eso la respuesta indica `requires_bot_restart` y la UI ofrece reiniciarlo ahí mismo.
+
+**Endurecido contra inyección** (revisado explícitamente para esta función, ya que escribe en `.env`): `PATCH /admin/config` no acepta un nombre de variable libre — expone un campo Pydantic fijo por variable con `extra="forbid"`, así que no hay forma de pedirle que toque `ADMIN_API_TOKEN` ni nada fuera de esa lista (un campo desconocido es 422, no se ignora en silencio). Cualquier valor con `\n`/`\r` se rechaza antes de escribir, como segunda barrera contra inyectar una línea nueva en el archivo. Los secretos (`groq_api_key`, `notifier_smtp_password`, `telegram_bot_token`) nunca se devuelven en ninguna respuesta — ni en el `GET`, ni en el `PATCH` — solo viaja un booleano "configurado", igual que `secrets_configured` ya hacía.
+
+### Bot de Telegram como subproceso administrado
+
+El bot se puede iniciar, detener y reiniciar desde la página **Consola** de Streamlit (`src/api/bot_supervisor.py`): la API lo lanza como subproceso hijo (`subprocess.Popen`), con PID, hora de inicio, uptime y un buffer de log en memoria. Al apagar la API se detiene también el subproceso del bot (`lifespan()` en `main.py`), para no dejarlo huérfano.
+
+`status()` distingue "detenido a propósito" (por el botón Detener/Reiniciar) de "se cerró solo" (`crashed=true`, p. ej. un token inválido) — en Windows `Popen.terminate()` no manda una señal real, así que sin esta distinción ambos casos lucían idénticos.
+
+### Consola
+
+Página nueva con dos paneles de solo estado, refresco manual (sin auto-poll, igual que el resto del panel):
+
+- **API**: uptime del proceso y últimas líneas de log (`GET /admin/logs`, buffer en memoria de hasta 1000 líneas colgado del logger raíz). No tiene control de reinicio — auto-reiniciar el propio proceso que atiende la request es frágil y de bajo valor cuando quien arrancó `uvicorn` ya lo controla por terminal.
+- **Bot de Telegram**: badge de estado (corriendo / detenido / se cerró solo), PID, uptime, botones Iniciar/Detener/Reiniciar y sus últimas líneas de log.
+
 ## Estructura
 
 ```
 src/
 ├── ingestion/      # formatters, chunkers, embedder, FAISS store, scripts de ingestión
 ├── classifiers/    # intent_classifier.py, risk_detector.py
-├── rag/            # retriever.py, chain.py
-├── api/            # main.py (FastAPI), schemas.py
-├── ui/             # app.py (Streamlit)
+├── rag/            # retriever.py, chain.py (+ chat_stream), citations.py
+├── api/            # main.py (FastAPI, incl. /chat/stream), schemas.py,
+│                   # routes_documents.py, routes_admin.py (config editable + logs),
+│                   # routes_bot.py, bot_supervisor.py (subproceso del bot)
+├── ui/             # app.py (Streamlit), client.py, views/ (chat, config, consola, ...)
 ├── bot/            # maternas_bot.py (Telegram)
 ├── skills/         # notifier/ (email SMTP), base ToolRegistry
 └── settings.py
