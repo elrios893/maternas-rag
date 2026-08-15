@@ -43,5 +43,8 @@ STYLES = """
 .badge-high   { background:#f8d7da; color:#721c24; padding:3px 10px; border-radius:12px; font-size:0.82em; font-weight:600; }
 /* Pill de fuente */
 .source-pill  { background:#e9ecef; color:#495057; padding:2px 8px; border-radius:8px; font-size:0.78em; margin:2px; display:inline-block; }
+/* Cursor parpadeante durante el streaming de la respuesta */
+.typing-caret { animation: caret-blink 0.9s steps(1) infinite; }
+@keyframes caret-blink { 50% { opacity: 0; } }
 </style>
 """

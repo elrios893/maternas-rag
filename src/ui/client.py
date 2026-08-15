@@ -5,6 +5,8 @@ Sin dependencias de Streamlit. Las excepciones de httpx se propagan
 hacia la capa de presentación (vistas), que decide cómo mostrarlas.
 """
 
+import json
+from typing import Iterator
 from urllib.parse import quote
 
 import httpx
@@ -44,6 +46,23 @@ def call_chat(message: str, history: list) -> dict:
     r = httpx.post(f"{API_URL}/chat", json=payload, timeout=API_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+def stream_chat(message: str, history: list, k: int = 5) -> Iterator[dict]:
+    """Turno del chat como secuencia de eventos NDJSON (ver POST /chat/stream).
+
+    Igual que call_chat(), sin captura de excepciones: httpx.HTTPError
+    sube tal cual a la vista, que decide cómo mostrarlo.
+    """
+    payload = {"message": message, "history": history, "k": k}
+    timeout = httpx.Timeout(connect=5.0, read=API_TIMEOUT, write=10.0, pool=5.0)
+    with httpx.stream("POST", f"{API_URL}/chat/stream", json=payload, timeout=timeout) as r:
+        if r.status_code >= 400:
+            r.read()   # sin esto, e.response.text lanza ResponseNotRead
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if line.strip():
+                yield json.loads(line)
 
 
 # ---------------------------------------------------------------------------
