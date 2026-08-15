@@ -10,6 +10,20 @@
 > el retrieval es 100% denso FAISS). La config activa en producción es **Config D**
 > (`medmcqa` + `medqa_*` + `maternaqaes_lm`, 253,455 vectores), no Config C/B como
 > describen algunas secciones históricas de este documento más abajo.
+>
+> **Segunda nota (agosto 2026):** desde la nota anterior se agregó un **panel de
+> administración completo** (Dashboard, Documentos, Métricas, Configuración,
+> Consola — protegido por `X-Admin-Token`), gestión en vivo de documentos del
+> índice FAISS (alta/baja/desactivación), **configuración editable en caliente**
+> para 10 variables de `.env` (con reinicio administrado del bot de Telegram para
+> las que ese proceso solo lee al arrancar), y **streaming token a token** de
+> `POST /chat/stream` con citas por nombre de documento en vez de "fragmento
+> [n]". Todo esto se documenta en la nueva sección **6 — Panel de
+> Administración** y en la sección **12 — API**. `GROQ_MODEL` ya no está
+> "parcialmente implementado": los 5 puntos que llaman a Groq (`chain.py` ×4,
+> `intent_classifier.py`, `risk_detector.py`) leen `settings.groq_model`, sin
+> valores hardcodeados. El proyecto también tiene ahora una suite de tests
+> automatizados (`pytest`, `tests/`) — ver sección 14.
 
 ---
 
@@ -35,7 +49,6 @@ La arquitectura está diseñada para operar con costo marginal cercano a cero (A
 | LLM evaluador | `gemma-4-31b` (Cerebras API) | — |
 | Embedding | `intfloat/multilingual-e5-base` | 768 dims |
 | Vector store | FAISS `IndexFlatIP` | 1.9.0 |
-| Búsqueda léxica | BM25 (rank-bm25) | 0.2.2 |
 | Orquestación LLM | LangChain | 0.3.13 |
 | Evaluación | Ragas | 0.2.12 |
 | Validación config | Pydantic Settings | 2.14.1 |
@@ -50,65 +63,87 @@ La arquitectura está diseñada para operar con costo marginal cercano a cero (A
 flowchart TD
     U([Usuario]) -->|texto| TG[Bot Telegram]
     U -->|texto| ST[UI Streamlit]
-    TG -->|POST /chat| API
-    ST -->|POST /chat| API
+    ADM([Admin]) -->|X-Admin-Token| ST
 
-    subgraph API["FastAPI — src/api/main.py"]
-        EP_CHAT[POST /chat]
+    TG -->|POST /chat| API
+    ST -->|POST /chat · POST /chat/stream| API
+    ST -.->|panel admin, si is_admin| API_ADMIN
+
+    subgraph API["FastAPI — src/api/"]
+        EP_CHAT["POST /chat<br/>POST /chat/stream (NDJSON)"]
         EP_CLS[POST /classify]
         EP_HLT[GET /health]
+
+        subgraph API_ADMIN["/documents*, /admin* — auth.py: require_admin_token"]
+            EP_DOCS["/documents*<br/>gestión del índice"]
+            EP_CFG["/admin/config<br/>GET + PATCH"]
+            EP_BOTR["/admin/bot/*"]
+            EP_LOGS["/admin/logs"]
+            EP_EVAL["/admin/evaluations*"]
+        end
     end
 
-    EP_CHAT --> CHAIN["chain.py — Orquestador"]
+    EP_CHAT --> CHAIN["chain.py — Orquestador<br/>chat() · chat_stream()"]
 
     subgraph CHAIN_FLOW["Flujo por turno"]
-        IC[Intent Classifier\nllama-3.3-70b · Groq]
-        RD[Risk Detector\nheurística + LLM]
-        CLR{¿Necesita\nclarificación?}
-        RTR[Retriever\nFAISS + BM25]
-        LLM[LLM Generador\nllama-3.3-70b · Groq]
-        NTFY[Notifier Skill\nSMTP email]
+        IC["Intent Classifier<br/>Groq · settings.groq_model"]
+        RD["Risk Detector<br/>heurística + LLM"]
+        CLR{"¿Necesita<br/>clarificación?"}
+        RTR["Retriever<br/>FAISS denso — Config D"]
+        LLM["LLM Generador<br/>Groq"]
+        CITE["citations.py<br/>nombre de documento + bloque Fuentes:"]
+        NTFY["Notifier Skill<br/>SMTP — hilo paralelo en /chat/stream"]
     end
 
     CHAIN --> IC --> RD --> CLR
     CLR -->|Sí| RESP_CLR([Pregunta de clarificación])
     CLR -->|No| RTR
     RD -->|risk=high/medium| NTFY
-    RTR --> LLM --> RESP([ChatResponse])
+    RTR --> LLM --> CITE --> RESP(["ChatResponse (JSON)<br/>o eventos NDJSON"])
 
     subgraph STORE["Índice FAISS — faiss_store/"]
-        FAISS_IDX["IndexFlatIP\n~380 745 vectores · 768 dims\n~1.15 GB"]
-        META["metadata.pkl\n~431 MB"]
-        BM25_IDX["BM25 Singleton\nMultiClinSum · 51 804 docs\n~150 MB RAM"]
+        FAISS_IDX["IndexFlatIP<br/>253 455 vectores · 768 dims<br/>medmcqa + medqa_* + maternaqaes_lm"]
+        META[metadata.pkl]
     end
 
     RTR -->|búsqueda densa| FAISS_IDX
-    RTR -->|búsqueda léxica| BM25_IDX
+    EP_DOCS -->|alta/baja/desactivación en caliente| FAISS_IDX
     FAISS_IDX --- META
 
-    subgraph EVAL["Pipeline de Evaluación"]
-        SAMPLER[sampler.py\nMaternaQA-es test split]
-        PH1[Fase 1: Generación\nllama-3.3-70b · Groq]
-        PH2[Fase 2: Ragas Judge\ngemma-4-31b · Cerebras]
-        REPORT[eval_results_*.json\neval_report_*.md]
+    EP_CFG -->|setattr + dotenv.set_key| SETTINGS["settings — singleton<br/>compartido por todos los módulos"]
+    EP_BOTR --> BOTSUP["bot_supervisor.py<br/>subprocess.Popen"]
+    BOTSUP -->|proceso hijo| BOTPROC["maternas_bot.py<br/>(intérprete Python aparte)"]
+    BOTPROC -->|POST /chat| API
+
+    subgraph EVAL["Pipeline de Evaluación (offline)"]
+        SAMPLER["sampler.py<br/>MaternaQA-es test split"]
+        PH1["Fase 1: Generación<br/>Groq"]
+        PH2["Fase 2: Ragas Judge<br/>gemma-4-31b · Cerebras"]
+        REPORT[eval_results_*.json]
     end
 
     SAMPLER --> PH1 --> PH2 --> REPORT
+    EP_EVAL -.->|lee, no recalcula| REPORT
 ```
+
+> El bot de Telegram consume `POST /chat` (no streaming); solo la UI Streamlit usa `POST /chat/stream`. `EP_DOCS`/`EP_CFG`/`EP_BOTR`/`EP_LOGS`/`EP_EVAL` están detallados en la sección **6 — Panel de Administración**.
 
 ### Descripción de componentes
 
 | Componente | Responsabilidad |
 |---|---|
-| **Bot Telegram** | Cliente ligero: reenvía mensajes a la API, mantiene historial en RAM por usuario, formatea respuestas con badges de riesgo HTML |
-| **UI Streamlit** | Interfaz web con historial visual en burbujas, panel lateral con metadata de cada turno (intent, risk, fuentes, tokens) |
-| **FastAPI** | Punto de entrada REST: valida requests con Pydantic, carga FAISS en startup via `lifespan`, expone `/chat`, `/classify`, `/health` |
-| **chain.py** | Orquestador del turno completo: intent → risk → clarification check → notificación → retrieval → generación → respuesta |
-| **Intent Classifier** | Clasifica la consulta en 12 categorías usando llama-3.3-70b (zero-shot JSON), con fallback heurístico por keywords |
+| **Bot Telegram** | Cliente ligero: reenvía mensajes a `POST /chat`, mantiene historial en RAM por usuario, formatea respuestas con badges de riesgo HTML, corre el scheduler de check-ins vía `JobQueue` |
+| **UI Streamlit** | Interfaz web multipágina: Chat (público) + Dashboard/Documentos/Métricas/Configuración/Consola (solo admin, gate por `X-Admin-Token`) |
+| **FastAPI** | Punto de entrada REST: valida requests con Pydantic, carga FAISS en startup vía `lifespan`, expone endpoints públicos (`/chat`, `/chat/stream`, `/classify`, `/health`) y administrativos (`/documents*`, `/admin*`, protegidos) |
+| **chain.py** | Orquestador del turno: intent → risk → clarification check → notificación (paralela en streaming) → retrieval → generación → citas. Expone `chat()` y `chat_stream()` sobre la misma lógica compartida |
+| **citations.py** | Nombre legible del documento de origen de cada fragmento citado (`[n]` → bloque `Fuentes:`), en vez de "fragmento [n]" genérico |
+| **Intent Classifier** | Clasifica la consulta en 12 categorías (zero-shot JSON vía `settings.groq_model`), con fallback heurístico por keywords |
 | **Risk Detector** | Evalúa urgencia clínica en 3 niveles: capa 1 heurística (sin API, 0ms), capa 2 LLM si la heurística no detecta nada |
-| **Retriever** | Búsqueda densa FAISS sobre `medmcqa` + `medqa_*` + `maternaqaes_lm` (Config D, producción actual; `textbook`/`multiclinsum` removidos por licencia) |
-| **FAISS Store** | Gestiona el índice vectorial en disco: carga, búsqueda, adición de documentos, persistencia |
-| **Notifier Skill** | Envía alertas por email SMTP (Gmail) cuando se detecta riesgo alto o medio-alto |
+| **Retriever** | Búsqueda densa FAISS pura sobre `medmcqa` + `medqa_*` + `maternaqaes_lm` (Config D, producción actual; sin BM25, sin `textbook`/`multiclinsum` — removidos por licencia) |
+| **FAISS Store** | Gestiona el índice vectorial en disco: carga, búsqueda, adición de documentos, activación/desactivación, persistencia |
+| **Notifier Skill** | Envía alertas por email SMTP cuando se detecta riesgo alto o medio-alto |
+| **routes_documents.py / routes_admin.py / routes_bot.py** | Endpoints del panel: gestión de documentos, evaluaciones + configuración editable + logs, y control del bot, cada uno protegido por `require_admin_token` a nivel de router |
+| **bot_supervisor.py** | Arranca/detiene/reinicia `maternas_bot.py` como subproceso hijo de la API; expone estado (pid, uptime, `crashed`) y buffer de logs en memoria |
 | **eval_pipeline.py** | Pipeline de evaluación en dos fases con modelos independientes; calcula 5 métricas Ragas + latencia |
 
 ---
@@ -120,10 +155,16 @@ maternas-rag/
 ├── src/                          # Código fuente principal
 │   ├── settings.py               # Configuración central (Pydantic Settings, lee .env)
 │   ├── api/
-│   │   ├── main.py               # FastAPI app: lifespan, 3 endpoints
-│   │   └── schemas.py            # Modelos Pydantic de request/response
+│   │   ├── main.py               # FastAPI app: lifespan, /chat, /chat/stream, /classify, /health
+│   │   ├── schemas.py            # Modelos Pydantic de request/response
+│   │   ├── auth.py               # require_admin_token(): valida X-Admin-Token (fail-closed)
+│   │   ├── routes_documents.py   # /documents* — gestión en vivo del índice FAISS
+│   │   ├── routes_admin.py       # /admin/evaluations*, /admin/config (GET+PATCH), /admin/logs
+│   │   ├── routes_bot.py         # /admin/bot/* — mapeo HTTP de bot_supervisor.py
+│   │   └── bot_supervisor.py     # Arranca/detiene maternas_bot.py como subproceso hijo
 │   ├── rag/
-│   │   ├── chain.py              # Orquestador principal del turno RAG
+│   │   ├── chain.py              # Orquestador principal del turno RAG (chat() + chat_stream())
+│   │   ├── citations.py          # Nombre legible de fuentes citadas ([n] → "Fuentes:")
 │   │   ├── retriever.py          # Config activa (= configD actualmente — producción)
 │   │   ├── retriever_configA.py  # [histórico] FAISS puro — baseline
 │   │   ├── retriever_configB.py  # [histórico] FAISS+BM25
@@ -146,9 +187,14 @@ maternas-rag/
 │   │   ├── eval_pipeline.py      # Pipeline 2 fases: generación + Ragas
 │   │   └── sampler.py            # Muestreo estratificado de MaternaQA-es
 │   ├── bot/
-│   │   └── maternas_bot.py       # Bot Telegram (polling)
+│   │   ├── maternas_bot.py       # Bot Telegram (polling)
+│   │   └── active_users.py       # Registro cifrado (Fernet) para el scheduler de check-ins
 │   ├── ui/
-│   │   └── app.py                # Interfaz Streamlit
+│   │   ├── app.py                # Entrypoint Streamlit: gates, sidebar, st.navigation
+│   │   ├── client.py             # Cliente HTTP hacia la API (sin lógica de presentación)
+│   │   ├── admin_gate.py         # Desbloquea las páginas admin dentro de la sesión (X-Admin-Token)
+│   │   ├── consent_gate.py       # Exige el aviso de tratamiento de datos antes de usar cualquier página
+│   │   └── views/                # chat, dashboard, documents, metrics, config, console
 │   └── skills/
 │       ├── __init__.py           # ToolSpec, ToolRegistry, Skill base
 │       └── notifier/
@@ -288,6 +334,112 @@ python src/bot/maternas_bot.py
 
 ---
 
+## 6. Panel de Administración
+
+### Descripción general
+
+El panel de administración vive dentro de la misma app de Streamlit (`src/ui/app.py`), como páginas adicionales que solo aparecen si la sesión del navegador se autenticó como admin. No es un proceso ni un puerto separado — reutiliza la API FastAPI existente bajo los prefijos `/documents*` y `/admin*`, todos protegidos por el mismo header `X-Admin-Token`.
+
+| Página | Contenido | Llamadas a la API |
+|---|---|---|
+| **Dashboard** | Resumen de sesión: estado de la API, vectores indexados, mensajes de la sesión actual | Ninguna (lee `st.session_state`) |
+| **Documentos** | Centro de gestión documental: listar/buscar, ver detalle paginado de fragmentos, activar/desactivar, subir `.txt` nuevo | `/documents*` |
+| **Métricas** | Visor de corridas de evaluación Ragas ya generadas (no recomputa nada) | `/admin/evaluations*` |
+| **Configuración** | Config efectiva del backend (solo lectura) + formulario editable para 10 variables de `.env` | `/admin/config` (GET+PATCH) |
+| **Consola** | Estado/logs de la API y del bot de Telegram, con control de arranque del bot | `/admin/logs`, `/admin/bot/*` |
+
+### Autenticación (`X-Admin-Token`)
+
+```mermaid
+sequenceDiagram
+    actor A as Admin
+    participant UI as Streamlit\n(admin_gate.py)
+    participant API as FastAPI\n(auth.py)
+
+    A->>UI: ingresa token en el sidebar
+    UI->>API: GET /admin/config\nheader X-Admin-Token
+    alt token vacío/incorrecto
+        API-->>UI: 401 Unauthorized
+        UI-->>A: "Token inválido" — is_admin permanece False
+    else ADMIN_API_TOKEN no configurado en .env
+        API-->>UI: 503 Service Unavailable
+        UI-->>A: "Panel deshabilitado"
+    else token correcto
+        API-->>UI: 200 OK
+        UI-->>A: is_admin=True, admin_token guardado en st.session_state
+        Note over UI: st.navigation ahora incluye Dashboard/Documentos/Métricas/Configuración/Consola
+    end
+```
+
+Puntos de diseño (`src/api/auth.py`, `src/ui/admin_gate.py`):
+
+- **Fail-closed:** sin `ADMIN_API_TOKEN` en `.env`, el panel responde `503` en vez de quedar abierto — un `.env` incompleto nunca degrada en silencio a "cualquiera con el puerto puede administrar".
+- **Comparación en tiempo constante** (`hmac.compare_digest`) para no filtrar el token por timing.
+- **La UI valida contra la API real**, no contra `settings.admin_api_token` leído en el proceso de Streamlit — así UI y API corriendo con `.env` distintos nunca autentican por error, y no se duplica la lógica de comparación.
+- **`admin_token` vive solo en `st.session_state`** (nunca en una variable de módulo): en modo servidor Streamlit un proceso atiende sesiones concurrentes de distintos usuarios; una variable de módulo filtraría el token de un admin autenticado a cualquier otra sesión.
+- **Páginas ocultas, no solo invisibles:** `st.navigation` solo puede resolver páginas presentes en la lista que recibe; una sesión sin `is_admin` nunca las recibe, así que quedan inalcanzables incluso por URL directa, no solo fuera del menú.
+- Protege también las **lecturas**: `GET /documents/{doc_id}` devuelve texto completo del corpus y CORS es abierto (`allow_origins=["*"]`) — sin auth, un listado sería un volcado scriptable del material, el mismo cuyo licenciamiento el proyecto ya tuvo que limpiar una vez (ver nota de licencias arriba).
+
+### Gestión de documentos (`/documents*`, `src/api/routes_documents.py`)
+
+Opera sobre el mismo `FAISSStore` singleton que sirve `/chat` (nunca una copia propia con `FAISSStore.load()`, que dejaría al servidor sirviendo vectores viejos mientras un `save()` posterior revierte cambios en silencio).
+
+| Endpoint | Qué hace |
+|---|---|
+| `GET /documents` | Lista documentos agregados por `doc_id` (no por vector), con búsqueda y paginación |
+| `GET /documents/stats` | Vectores totales, cantidad de documentos, caracteres totales, fecha de build del índice |
+| `GET /documents/{doc_id}` | Detalle paginado de los fragmentos de un documento (texto completo por chunk) |
+| `PATCH /documents/{doc_id}` | Activa/desactiva **todos** los fragmentos del documento |
+| `POST /documents/upload` | Sube un `.txt`, lo chunkea y lo indexa en caliente |
+
+Decisiones relevantes:
+
+- **Vista agregada cacheada por versión, no por TTL** (`_index_view`): `store.metadata` tiene cientos de miles de entradas; recorrerlo entero en cada request de la UI (que pide lista + stats juntos) sería dos barridos O(N) por click. Se cachea con clave `(id(store), store.total, store.mutation_seq)` — un TTL seguiría reportando "activo" un rato después de que un admin lo desactivó, el peor fallo posible para un control de compliance.
+- **`active`/`has_chunks` se agregan sobre TODOS los chunks del documento** (AND/OR), no se toman del primero que aparece — evita reportar un estado arbitrario para un documento a medio activar/desactivar.
+- **Desactivar ≠ borrar:** `PATCH` marca los chunks como inactivos (excluidos del retrieval) sin tocar el índice FAISS ni renumerar vectores; si falla `save_metadata()` tras la mutación en memoria, se revierte en memoria para no divergir de lo que quedó en disco.
+- **Límites de upload acotan CHUNKS, no solo bytes** (`MAX_UPLOAD_CHUNKS=400`, `MAX_UPLOAD_BYTES=2MB`): el embedding corre síncrono dentro del request sobre CPU, y lo que define el tiempo real es cuántos chunks hay que vectorizar, no el tamaño del archivo.
+- **Solo `.txt` sin ruta en el nombre** — mitigación adicional al hecho de que el proyecto ya tuvo que remover `textbook`/`multiclinsum` del índice por licenciamiento (ver nota arriba): un upload abierto reabriría ese riesgo por otra puerta. El token admin y la etiqueta de fuente visible en cada cita son las mitigaciones.
+- **Sin TOCTOU:** la verificación de `doc_id` duplicado ocurre dentro del mismo `store.write_lock()` que hace el `add_documents()`, no antes.
+
+### Métricas de evaluación (`/admin/evaluations*`)
+
+Solo lectura: lee los reportes JSON que `src/evaluation/eval_pipeline.py` ya generó en `evaluation_reports/`, sin recomputar nada. `run_id` se resuelve contra una ruta validada dentro de `evaluation_reports/` (rechaza intentos de path traversal tipo `../../secrets`).
+
+### Configuración editable (`/admin/config`, `src/api/routes_admin.py`)
+
+10 variables de `.env` se pueden editar desde la página **Configuración**, sin editar el archivo a mano ni reiniciar procesos por terminal:
+
+| Variable | Aplica |
+|---|---|
+| `GROQ_MODEL`, `GROQ_API_KEY` | En caliente, sin reiniciar nada |
+| `NOTIFIER_ENABLED`, `NOTIFIER_EMAIL_TO`, `NOTIFIER_SMTP_USER`, `NOTIFIER_SMTP_PASSWORD` | En caliente, sin reiniciar nada |
+| `TELEGRAM_BOT_TOKEN`, `STATUS_CHECK_INTERVAL_LOW/MEDIUM/HIGH_SECONDS` | Requiere reiniciar el bot (botón "Reiniciar bot ahora" en la misma respuesta) |
+
+**Por qué la mitad aplica en caliente y la otra mitad no:** son 3 procesos independientes en la misma máquina (API, UI Streamlit, bot de Telegram). Los primeros 6 campos los lee el propio proceso de la API en el momento de usarlos (`notify_risk()` lee `settings.notifier_*` en cada llamada; los 5 puntos que llaman a Groq leen `settings.groq_model` en cada llamada) — mutar el singleton `settings` en memoria (`setattr(settings, campo, valor)`) se ve al instante desde cualquier módulo que hizo `from src.settings import settings`, porque todos comparten el mismo objeto. `GROQ_API_KEY` es la excepción dentro de ese grupo: se usa para construir un cliente `Groq(api_key=...)` cacheado por separado en `chain.py`, `intent_classifier.py` y `risk_detector.py` — por eso cambiarla también dispara `reset_client()` en los tres, para que el próximo uso reconstruya el cliente con la key nueva. Los últimos 4 campos los lee únicamente el proceso del bot al arrancar (`Settings()` a nivel de módulo, otro intérprete de Python) — mutar el `settings` de la API no le llega; la única forma de que apliquen es que el bot **vuelva a arrancar**, de ahí que la respuesta del `PATCH` incluya `requires_bot_restart` y la UI ofrezca reiniciarlo ahí mismo.
+
+**Persistencia y endurecido contra inyección** (revisado explícitamente, dado que el endpoint escribe en `.env`):
+
+- `PATCH /admin/config` **no acepta un nombre de variable libre**: expone un campo Pydantic fijo por variable (`model_config = {"extra": "forbid"}`), así que no existe forma de pedirle que toque `ADMIN_API_TOKEN` ni ninguna otra variable fuera de esa lista — un campo desconocido es `422`, no se ignora en silencio.
+- La escritura usa `dotenv.set_key()` (ya dependencia del proyecto vía `pydantic-settings`) en vez de concatenar texto a mano.
+- Cualquier valor con `\n`/`\r` se rechaza antes de escribir (`400`) — segunda barrera contra inyectar una línea nueva en el archivo (p. ej. `"x\nADMIN_API_TOKEN=y"`, que en la próxima lectura definiría una variable aparte).
+- Los 3 secretos (`groq_api_key`, `notifier_smtp_password`, `telegram_bot_token`) **nunca se devuelven en ninguna respuesta**, ni en el `GET` ni en el `PATCH` — solo viaja un booleano "configurado" (`secrets_configured`), el mismo patrón que ya existía antes de que la escritura fuera posible.
+- Los cambios se loguean por **nombre de campo, nunca por valor** (`logger.info("Variables actualizadas: %s", changed)`).
+
+### Bot de Telegram como subproceso administrado (`src/api/bot_supervisor.py`)
+
+El bot se puede iniciar, detener y reiniciar desde la página **Consola**: la API lo lanza como subproceso hijo (`subprocess.Popen([sys.executable, "src/bot/maternas_bot.py"], ...)`), con PID, hora de inicio, uptime y un buffer de log en memoria (hilo lector aparte, `deque(maxlen=1000)`). Estado y buffer son singletons de módulo protegidos por un lock, para que dos clicks seguidos de "Reiniciar" no lancen dos procesos del bot a la vez. Al apagar la API (`lifespan()` en `main.py`) se detiene también el subproceso del bot, para no dejarlo huérfano.
+
+**Distinción crasheado vs. detenido a propósito:** en Windows, `Popen.terminate()` llama a `TerminateProcess` — no hay señal SIGTERM real, y el proceso queda con un `exit_code` no nulo (típicamente 1) **igual que** un `sys.exit(1)` por token de Telegram inválido. Sin una bandera adicional, apretar "Detener" se vería en la consola idéntico a un crash real. `bot_supervisor.status()` expone `crashed: bool` — `True` solo si el proceso terminó por su cuenta, `False` si lo detuvo un admin, aunque el `exit_code` numérico sea el mismo en ambos casos.
+
+### Consola (`GET /admin/logs`, `/admin/bot/*`)
+
+Dos paneles de solo estado, con refresco **manual** (botón "Actualizar", sin auto-poll — consistente con que el resto del panel tampoco se refresca solo):
+
+- **API:** uptime del proceso y últimas líneas de log. `GET /admin/logs` lee un buffer en memoria (`deque(maxlen=1000)`) alimentado por un `logging.Handler` colgado del logger raíz desde el arranque de `main.py`. No tiene control de reinicio — auto-reiniciar el propio proceso que atiende la request es frágil (requeriría algo como `os.execv`) y de bajo valor cuando quien arrancó `uvicorn` ya lo controla por terminal; esto queda documentado como **fuera de alcance a propósito** en `main.py`.
+- **Bot de Telegram:** badge de estado (🟢 corriendo / 🔴 detenido / ⚠️ se cerró solo), PID, uptime, botones Iniciar/Detener/Reiniciar y sus últimas líneas de log.
+
+---
+
 ## 7. Evaluación del Agente con Ragas
 
 ### Marco de evaluación
@@ -303,7 +455,7 @@ sequenceDiagram
 
     S->>G: 15 pares estratificados (seed=42)
     loop por cada par
-        G->>G: retrieve() → contextos FAISS+BM25
+        G->>G: retrieve() → contextos FAISS denso (Config D)
         G->>G: llama-3.3-70b genera respuesta
         G->>G: mide latency_s
     end
@@ -350,60 +502,74 @@ sequenceDiagram
 
 ---
 
-## 7. Componentes / Módulos del Sistema
+## 8. Componentes / Módulos del Sistema
 
 ### Diagrama de componentes
 
 ```mermaid
 graph TD
     subgraph Interfaces
-        UI[app.py\nStreamlit]
-        BOT[maternas_bot.py\nTelegram]
+        UI["ui/app.py<br/>Streamlit — entrypoint"]
+        VIEWS["ui/views/<br/>chat, dashboard, documents,<br/>metrics, config, console"]
+        GATE["ui/admin_gate.py<br/>ui/consent_gate.py"]
+        CLIENT["ui/client.py<br/>httpx hacia la API"]
+        BOT["bot/maternas_bot.py<br/>Telegram, polling"]
     end
 
     subgraph API["src/api/"]
-        MAIN[main.py\nFastAPI lifespan]
-        SCH[schemas.py\nPydantic models]
+        MAIN["main.py<br/>FastAPI, lifespan, /chat, /chat/stream, /classify, /health"]
+        SCH["schemas.py<br/>Pydantic models"]
+        AUTH["auth.py<br/>require_admin_token"]
+        RDOC["routes_documents.py"]
+        RADM["routes_admin.py"]
+        RBOT["routes_bot.py"]
+        SUP["bot_supervisor.py<br/>subprocess.Popen"]
     end
 
     subgraph Core["src/rag/"]
-        CHAIN[chain.py\nOrquestador]
-        RTR[retriever.py\nFAISS+BM25]
-        BM25[bm25_index.py\nSingleton BM25]
+        CHAIN["chain.py<br/>Orquestador — chat() / chat_stream()"]
+        CITE["citations.py"]
+        RTR["retriever.py<br/>FAISS denso (Config D)"]
     end
 
     subgraph Classifiers["src/classifiers/"]
-        IC[intent_classifier.py\n12 intents]
-        RD[risk_detector.py\n3 niveles]
+        IC["intent_classifier.py<br/>12 intents"]
+        RD["risk_detector.py<br/>3 niveles"]
     end
 
     subgraph Ingestion["src/ingestion/"]
-        STORE[store.py\nFAISSStore]
-        EMB[embedder.py\nSingleton embedding]
-        FMT[formatters.py\n7 formateadores]
-        CHK[chunkers.py\nestrategias chunking]
+        STORE["store.py<br/>FAISSStore"]
+        EMB["embedder.py<br/>Singleton embedding"]
+        FMT["formatters.py<br/>7 formateadores"]
+        CHK["chunkers.py<br/>estrategias chunking"]
     end
 
     subgraph Skills["src/skills/"]
-        REG[ToolRegistry\n__init__.py]
-        NTFY[notifier/\ntool.py + skill.py]
+        REG["ToolRegistry<br/>__init__.py"]
+        NTFY["notifier/<br/>tool.py + skill.py"]
     end
 
     subgraph Eval["src/evaluation/"]
-        PIPE[eval_pipeline.py\n2 fases]
-        SAMP[sampler.py\nmuestreo estratificado]
+        PIPE["eval_pipeline.py<br/>2 fases"]
+        SAMP["sampler.py<br/>muestreo estratificado"]
     end
 
-    UI --> MAIN
+    UI --> GATE --> VIEWS --> CLIENT
+    CLIENT --> MAIN
     BOT --> MAIN
     MAIN --> CHAIN
+    MAIN --> RDOC & RADM & RBOT
+    RDOC & RADM & RBOT --> AUTH
+    RADM --> RBOT
+    RBOT --> SUP
+    SUP -->|proceso hijo| BOT
     CHAIN --> IC
     CHAIN --> RD
     CHAIN --> RTR
+    CHAIN --> CITE
     CHAIN --> REG
+    RDOC --> STORE
     RTR --> STORE
-    RTR --> BM25
-    BM25 --> STORE
     STORE --> EMB
     REG --> NTFY
     PIPE --> CHAIN
@@ -413,19 +579,25 @@ graph TD
 ### Por módulo
 
 #### `src/settings.py`
-Instancia global `settings` de Pydantic Settings. Lee `.env` al importar. Todas las claves de API, rutas y parámetros del sistema se centralizan aquí. Nunca hardcodear valores fuera de este archivo.
+Instancia global `settings` de Pydantic Settings. Lee `.env` al importar. Todas las claves de API, rutas y parámetros del sistema se centralizan aquí. Es un singleton mutable: `PATCH /admin/config` (ver sección 6) hace `setattr(settings, campo, valor)` sobre esta misma instancia, visible al instante en todos los módulos que la importaron.
 
 #### `src/api/main.py`
-Punto de entrada de la aplicación. Carga el índice FAISS en `lifespan` (startup/shutdown). CORS abierto a `*` (pendiente de restringir en producción). Los tres endpoints delegan completamente a `chain.py` o a los clasificadores; no contienen lógica de negocio.
+Punto de entrada de la aplicación. Carga el índice FAISS en `lifespan` (startup) y detiene el subproceso del bot si está corriendo (shutdown). CORS abierto a `*` (pendiente de restringir en producción). Expone los 4 endpoints públicos (`/health`, `/chat`, `/chat/stream`, `/classify`) y registra los 3 routers administrativos (`documents_router`, `admin_router`, `bot_router`); también mantiene el buffer de logs en memoria (`_log_buffer`) que alimenta `GET /admin/logs`.
+
+#### `src/api/auth.py`, `routes_documents.py`, `routes_admin.py`, `routes_bot.py`
+La auth (`require_admin_token`, header `X-Admin-Token`, fail-closed) se declara una sola vez por router — un endpoint nuevo bajo `/documents*` o `/admin*` no puede quedar sin proteger por descuido. `routes_documents.py` gestiona el índice en caliente; `routes_admin.py` expone evaluaciones (solo lectura), configuración editable (`GET`/`PATCH /admin/config`) y logs de la API; `routes_bot.py` es el mapeo HTTP delgado sobre `bot_supervisor.py`. Detalle completo en la sección 6.
+
+#### `src/api/bot_supervisor.py`
+Arranca/detiene/reinicia `bot/maternas_bot.py` como subproceso hijo (`subprocess.Popen`), con un hilo lector volcando su stdout a un buffer en memoria. Estado protegido por lock (evita dos procesos concurrentes ante doble click). Distingue `crashed` (terminó solo) de detención manual — necesario en Windows, donde `Popen.terminate()` no deja rastro de señal real.
 
 #### `src/rag/chain.py`
-Módulo más crítico del sistema. Implementa el flujo completo de un turno conversacional en 8 pasos. Gestiona el historial (últimos 6 turnos), construye el system prompt dinámico según nivel de riesgo, y formatea referencias numeradas `[n]` al final de cada respuesta. El singleton de Groq (`_groq_client`) se inicializa una vez en el primer uso.
+Módulo más crítico del sistema. Implementa el flujo completo de un turno conversacional (clasificar → detectar riesgo → clarificación → notificar → recuperar → generar → citar), compartido entre `chat()` (respuesta única) y `chat_stream()` (generador de eventos NDJSON, notificación en hilo aparte para no bloquear los `delta`). Gestiona el historial (últimos 6 turnos) y construye el system prompt dinámico según nivel de riesgo. El singleton de Groq (`_groq_client`) se inicializa en el primer uso y se puede forzar a reconstruir con `reset_client()` (usado cuando `GROQ_API_KEY` cambia en caliente).
 
-#### `src/rag/retriever.py` (y variantes A/B/C)
-Implementa la lógica de recuperación híbrida. La separación en archivos independientes permite intercambiar arquitecturas copiando el archivo deseado sobre `retriever.py`. Los tres archivos tienen la misma interfaz pública: `retrieve(query, k, k_bm25)` y `format_context(docs, max_chars)`.
+#### `src/rag/citations.py`
+Separado de `retriever.py` a propósito (ese archivo es un snapshot intercambiable entre configs — ver docstring de `retriever.py`). Resuelve el nombre legible del documento de origen de cada fragmento (`document_name()`), su localizador de página (`document_locator()`) y arma el bloque final `Fuentes:` agrupando citas `[n]` por documento (`build_reference_block()`).
 
-#### `src/rag/bm25_index.py`
-Singleton construido al primer uso (~10–20 s, ~150 MB RAM). Carga todos los fragmentos de MultiClinSum desde `metadata.pkl` y construye el índice `BM25Okapi`. Si la query no produce ningún score ≥ 0.5, retorna lista vacía — MultiClinSum no contamina el contexto cuando no hay coincidencia léxica real.
+#### `src/rag/retriever.py` (y variantes históricas A/B/C/D/E)
+Config activa en producción: **Config D**, búsqueda 100% densa FAISS sobre `medmcqa` + `medqa_*` + `maternaqaes_lm` (sin BM25, sin `textbook`/`multiclinsum`). La separación en archivos independientes permite intercambiar arquitecturas copiando el archivo deseado sobre `retriever.py`; todas comparten la misma interfaz pública `retrieve(query, k, k_bm25=0)` / `format_context(docs, max_chars)` — `k_bm25` se conserva en la firma por compatibilidad con las variantes históricas que sí usaban BM25, aunque Config D lo ignora.
 
 #### `src/classifiers/intent_classifier.py`
 Clasificador zero-shot. 12 intents válidos. Tres niveles de fallback garantizan que siempre devuelva un intent válido, incluso sin conexión a Groq.
@@ -434,7 +606,7 @@ Clasificador zero-shot. 12 intents válidos. Tres niveles de fallback garantizan
 Dos capas de detección. La capa heurística (diccionarios de keywords por categoría de riesgo) no consume tokens y tiene latencia ~0ms. Solo cuando la heurística devuelve `low` se realiza la llamada al LLM de confirmación.
 
 #### `src/ingestion/store.py`
-`FAISSStore` encapsula `faiss.IndexFlatIP` con 768 dimensiones. La normalización L2 implícita convierte el producto interno en similitud coseno. Gestiona dos archivos en disco: `index.faiss` (~1.15 GB) y `metadata.pkl` (~431 MB) con el texto y metadatos de cada vector.
+`FAISSStore` encapsula `faiss.IndexFlatIP` con 768 dimensiones. La normalización L2 implícita convierte el producto interno en similitud coseno. Gestiona dos archivos en disco: `index.faiss` y `metadata.pkl` con el texto y metadatos de cada vector, además de `active`/`mutation_seq` para el panel de administración (activación/desactivación de documentos sin renumerar vectores).
 
 #### `src/ingestion/embedder.py`
 Singleton de `SentenceTransformer('intfloat/multilingual-e5-base')`. Requiere prefijos `"query: "` para queries y `"passage: "` para documentos (mandatorio en multilingual-e5, ver Q5 en `qa_technical.md`). Se carga en CUDA si `EMBEDDING_DEVICE=cuda`.
@@ -443,11 +615,11 @@ Singleton de `SentenceTransformer('intfloat/multilingual-e5-base')`. Requiere pr
 Sistema extensible de herramientas. `ToolRegistry` es un dict de clase que permite registrar y ejecutar tools por nombre. `NotifierSkill` se auto-registra al importar `src.skills.notifier`. Para añadir una nueva skill: crear `src/skills/mi_skill/`, heredar de `Skill`, registrar en `chain.py`.
 
 #### `src/evaluation/eval_pipeline.py`
-Pipeline offline (no se ejecuta en producción). Dos fases separadas permiten regenerar respuestas y re-evaluar independientemente. El JSON de fase 1 contiene todo lo necesario para re-ejecutar fase 2 sin volver a llamar al chatbot.
+Pipeline offline (no se ejecuta en producción). Dos fases separadas permiten regenerar respuestas y re-evaluar independientemente. El JSON de fase 1 contiene todo lo necesario para re-ejecutar fase 2 sin volver a llamar al chatbot. Sus resultados se sirven de solo lectura vía `GET /admin/evaluations*` (ver sección 6).
 
 ---
 
-## 8. Flujos de Datos / Diagramas de Secuencia
+## 9. Flujos de Datos / Diagramas de Secuencia
 
 ### Flujo completo de un turno de chat
 
@@ -455,48 +627,98 @@ Pipeline offline (no se ejecuta en producción). Dos fases separadas permiten re
 sequenceDiagram
     actor U as Usuario
     participant IF as Interface\n(Streamlit/Telegram)
-    participant API as FastAPI\n/chat
-    participant CHAIN as chain.py
+    participant API as FastAPI\nPOST /chat
+    participant CHAIN as chain.py\nchat()
     participant IC as IntentClassifier
     participant RD as RiskDetector
-    participant RTR as Retriever
+    participant RTR as Retriever\n(FAISS denso, Config D)
     participant FAISS as FAISSStore
-    participant BM25 as BM25Index
-    participant GROQ as Groq LLM\nllama-3.3-70b
+    participant CITE as citations.py
+    participant GROQ as Groq LLM\nsettings.groq_model
     participant SMTP as Notifier\nSMTP
 
     U->>IF: "me duele la cabeza fuerte"
     IF->>API: POST /chat {message, history}
-    API->>CHAIN: rag_chat(query, history, k)
+    API->>CHAIN: chat(query, history, k)
 
     CHAIN->>IC: classify_intent(query, history)
     IC->>GROQ: zero-shot JSON → intent
     GROQ-->>IC: {"intent":"signos_de_alarma","confidence":0.92}
     IC-->>CHAIN: IntentResult
 
-    CHAIN->>RD: detect_risk(query, intent)
+    CHAIN->>RD: detect_risk(query, intent, history)
     RD->>RD: heurística keywords → "high" (dolor de cabeza intenso)
     RD-->>CHAIN: RiskResult(level="high", flags=["dolor_intenso"])
 
-    CHAIN->>SMTP: notify_risk(query, "high", intent, reasoning)
-    SMTP-->>CHAIN: {"success": true}
+    CHAIN->>CHAIN: _should_clarify() → False (risk != low)
 
-    CHAIN->>CHAIN: _should_clarify() → False (risk!=low)
+    CHAIN->>SMTP: _run_notification() → notify_risk(query, "high", intent, reasoning)
+    SMTP-->>CHAIN: {"success": true}
 
     CHAIN->>RTR: retrieve(query, k=5)
     RTR->>FAISS: search(embed("query: " + query), k=50)
-    FAISS-->>RTR: 50 candidatos DENSE_SOURCES
-    RTR->>RTR: filtra top-5 DENSE
-    RTR->>BM25: search_bm25(query, k=2)
-    BM25-->>RTR: [] (sin match léxico)
+    FAISS-->>RTR: candidatos de medmcqa+medqa_*+maternaqaes_lm
+    RTR->>RTR: filtra top-5
     RTR-->>CHAIN: 5 fragmentos
 
-    CHAIN->>CHAIN: format_context(docs) → "[1] ...\n[2] ..."
+    CHAIN->>CITE: format_context(docs) → "--- [1] {nombre doc} ---\n..."
     CHAIN->>GROQ: messages=[system+URGENT, history×6, context, query]
     GROQ-->>CHAIN: respuesta con citas [n]
+    CHAIN->>CITE: build_reference_block(answer, docs) → bloque "Fuentes:"
+    CITE-->>CHAIN: answer + "\n\nFuentes:\n[1] {nombre del documento}"
     CHAIN-->>API: ChatResponse(answer, intent, risk_level, sources, notified=True)
     API-->>IF: JSON response
-    IF-->>U: 🚨 RIESGO ALTO + respuesta + fuentes
+    IF-->>U: 🚨 RIESGO ALTO + respuesta + fuentes por nombre de documento
+```
+
+### Flujo de streaming (`POST /chat/stream`)
+
+Mismo flujo lógico que `chat()`, pero emitido como eventos incrementales; la notificación de riesgo corre en un hilo aparte para no bloquear los `delta` (ver `chain.py::chat_stream`). Lo usa la UI de Streamlit; el bot de Telegram sigue usando `POST /chat` sin streaming.
+
+```mermaid
+sequenceDiagram
+    actor U as Usuario
+    participant ST as UI Streamlit\nchat_view.py
+    participant API as FastAPI\nPOST /chat/stream
+    participant CHAIN as chain.py\nchat_stream()
+    participant CLS as _classify_turn()\n(intent + riesgo)
+    participant NT as Hilo: _run_notification()
+    participant RTR as Retriever + citations.py
+    participant GROQ as Groq LLM\n(stream=True)
+
+    U->>ST: envía mensaje
+    ST->>API: POST /chat/stream {message, history}
+    API->>CHAIN: for event in chat_stream(...)
+
+    CHAIN->>ST: {"type":"status","stage":"classifying"}
+    CHAIN->>CLS: _classify_turn(query, history)
+    CLS-->>CHAIN: intent, risk, needs_clarification
+
+    alt necesita clarificación
+        CHAIN->>ST: {"type":"meta", needs_clarification:true, sources:[]}
+        CHAIN->>ST: {"type":"delta", text: pregunta}
+        CHAIN->>ST: {"type":"done", tokens_used:0}
+    else responde normalmente
+        CHAIN->>NT: arranca en background (daemon thread)
+        Note over NT: notify_risk() si high, o LLM barato si medium — no bloquea lo que sigue
+        CHAIN->>ST: {"type":"status","stage":"retrieving"}
+        CHAIN->>RTR: retrieve() + format_context()
+        RTR-->>CHAIN: docs, messages
+        CHAIN->>ST: {"type":"meta", sources:[{document_name, pages, ...}], intent, risk_level}
+        CHAIN->>ST: {"type":"status","stage":"generating"}
+        CHAIN->>GROQ: chat.completions.create(stream=True)
+        loop por cada chunk del stream
+            GROQ-->>CHAIN: delta.content
+            CHAIN->>ST: {"type":"delta","text":"..."}
+            ST->>ST: placeholder = None hasta el 1er delta\n(evita que el banner de riesgo\nrenderice debajo del texto)
+        end
+        CHAIN->>RTR: build_reference_block(answer, docs)
+        RTR-->>CHAIN: bloque "Fuentes:" agrupado por documento
+        CHAIN->>NT: notify_thread.join(timeout=10)
+        NT-->>CHAIN: notified: bool
+        CHAIN->>ST: {"type":"done", answer, tokens_used, notified}
+    end
+    ST-->>U: texto renderizado token a token + fuentes por nombre de documento
 ```
 
 ### Flujo de clarificación
@@ -548,7 +770,7 @@ sequenceDiagram
 
 ---
 
-## 9. Hallazgos — Impacto de Configuraciones en Métricas Ragas
+## 10. Hallazgos — Impacto de Configuraciones en Métricas Ragas
 
 ### Hallazgo 1: El tamaño de los chunks es el factor más crítico para faithfulness
 
@@ -605,7 +827,7 @@ Configs A y B tienen `context_recall=0.000` y `context_precision=0.000` a pesar 
 
 ---
 
-## 10. Modelo de Datos
+## 11. Modelo de Datos
 
 ### Fuentes de datos indexadas
 
@@ -688,7 +910,7 @@ class Document:
 
 ---
 
-## 11. API
+## 12. API
 
 ### Endpoints
 
@@ -696,7 +918,25 @@ class Document:
 |---|---|---|---|
 | `GET` | `/health` | Estado del servicio, vectores cargados, modelo activo | No |
 | `POST` | `/chat` | Turno completo RAG: clasifica intent + risk, recupera contexto, genera respuesta | No |
+| `POST` | `/chat/stream` | Igual que `/chat`, como NDJSON (`status`→`meta`→`delta`*→`done`), token a token | No |
 | `POST` | `/classify` | Solo clasificadores: devuelve intent y risk sin generación RAG | No |
+| `GET` | `/documents` | Lista documentos indexados, con búsqueda y paginación | `X-Admin-Token` |
+| `GET` | `/documents/stats` | Estadísticas agregadas del índice | `X-Admin-Token` |
+| `GET` | `/documents/{doc_id}` | Detalle paginado de los fragmentos de un documento | `X-Admin-Token` |
+| `PATCH` | `/documents/{doc_id}` | Activa/desactiva todos los fragmentos de un documento | `X-Admin-Token` |
+| `POST` | `/documents/upload` | Sube un `.txt`, lo chunkea y lo indexa en caliente | `X-Admin-Token` |
+| `GET` | `/admin/evaluations` | Lista corridas de evaluación Ragas ya generadas | `X-Admin-Token` |
+| `GET` | `/admin/evaluations/{run_id}` | Detalle de una corrida (métricas globales + por tipo/dificultad) | `X-Admin-Token` |
+| `GET` | `/admin/config` | Configuración efectiva del proceso, secretos redactados a booleano | `X-Admin-Token` |
+| `PATCH` | `/admin/config` | Actualiza en caliente + persiste en `.env` un subconjunto fijo de 10 variables | `X-Admin-Token` |
+| `GET` | `/admin/logs` | Últimas líneas de log del proceso de la API + uptime | `X-Admin-Token` |
+| `GET` | `/admin/bot/status` | Estado del subproceso del bot: running, pid, uptime, exit_code, crashed | `X-Admin-Token` |
+| `POST` | `/admin/bot/start` | Inicia el subproceso del bot (no-op si ya corre) | `X-Admin-Token` |
+| `POST` | `/admin/bot/stop` | Detiene el subproceso del bot (no-op si ya está detenido) | `X-Admin-Token` |
+| `POST` | `/admin/bot/restart` | `stop` + `start` | `X-Admin-Token` |
+| `GET` | `/admin/bot/logs` | Últimas líneas de log del subproceso del bot | `X-Admin-Token` |
+
+> Detalle de diseño de los endpoints `/documents*` y `/admin*` en la sección **6 — Panel de Administración**.
 
 ### `GET /health`
 
@@ -705,7 +945,7 @@ class Document:
 {
   "status": "ok",
   "model": "llama-3.3-70b-versatile",
-  "total_vectors": 380745,
+  "total_vectors": 253455,
   "faiss_loaded": true
 }
 ```
@@ -749,6 +989,22 @@ class Document:
 }
 ```
 
+### `POST /chat/stream`
+
+Mismo request que `POST /chat` (`message`, `history`, `k` opcional). Responde `application/x-ndjson`: una línea JSON por evento, para que la UI muestre la respuesta a medida que se genera en vez de esperar el turno completo. Declarado `def` (no `async def`) a propósito en `main.py`: FastAPI corre un endpoint sync en el threadpool, así que el cliente Groq síncrono no bloquea el event loop mientras transmite. La notificación de riesgo corre en paralelo en un hilo de fondo, sin bloquear los `delta`.
+
+```
+{"type": "status", "stage": "clasificando"}
+{"type": "status", "stage": "generando"}
+{"type": "meta", "intent": "medicamentos", "risk_level": "medium", "action": "medical_consultation", "risk_flags": [...], "sources": [{"score": 0.89, "document_name": "GPC-Atencion-Prenatal-de-Bajo-Riesgo-2023", "pages": [12], ...}]}
+{"type": "delta", "text": "El "}
+{"type": "delta", "text": "ibuprofeno "}
+{"type": "delta", "text": "está..."}
+{"type": "done", "tokens_used": 1240, "notified": false}
+```
+
+Las citas dentro del texto siguen usando marcadores numerados `[n]`, pero el nombre mostrado en el bloque final `Fuentes:` es el **nombre del documento de origen** (`document_name`, ver `src/rag/citations.py`), no `fragmento [n]` genérico: para el corpus con archivo fuente real (`maternaqaes_lm`, `upload`) usa el nombre del PDF/txt; para el ~73% del índice sin archivo asociado (`medmcqa`/`medqa_*`, ítems de examen médico) degrada a `"MedMCQA · {subject} — {topic}"` o equivalente. `POST /chat` (sin streaming) sigue siendo el que usan el bot de Telegram y el pipeline de evaluación, sin cambios de contrato salvo dos campos nuevos en la respuesta: `needs_clarification` y `clarification_question` ya no solo viven implícitos en `answer`, sino como campos explícitos.
+
 ### `POST /classify`
 
 **Request:**
@@ -774,7 +1030,7 @@ class Document:
 
 ---
 
-## 12. Configuración y Variables de Entorno
+## 13. Configuración y Variables de Entorno
 
 Todas las variables se leen desde `.env` en la raíz del proyecto vía Pydantic Settings (`src/settings.py`).
 
@@ -784,35 +1040,41 @@ Todas las variables se leen desde `.env` en la raíz del proyecto vía Pydantic 
 |---|---|---|
 | `GROQ_API_KEY` | — | API key de Groq. LLM principal del chatbot (llama-3.3-70b) y clasificadores |
 | `GROQ_API_KEY_2` | `""` | Segunda key Groq. Backup para evaluación Ragas cuando KEY_1 alcanza límite diario (100k tok/día) |
-| `GROQ_MODEL` | `llama-3.1-70b-versatile` | Nombre del modelo Groq. **Nota:** el código hardcodea `llama-3.3-70b-versatile` en varios lugares; esta variable está parcialmente implementada |
+| `GROQ_MODEL` | `llama-3.1-70b-versatile` | Nombre del modelo Groq. Centralizado: los 5 puntos que llaman a Groq (`chain.py` ×4, `intent_classifier.py`, `risk_detector.py`) leen `settings.groq_model`, sin hardcodeo. Editable en caliente desde el panel admin (ver sección 6) |
 | `CEREBRAS_KEY` | `""` | API key de Cerebras. Requerida para ejecutar evaluación Ragas (judge gemma-4-31b) |
 | `OPENROUTER_KEY` | `""` | Backup para Ragas. Actualmente inestable para evaluación |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-base` | Modelo de embedding. Cambiar requiere regenerar el índice FAISS completo |
 | `EMBEDDING_DEVICE` | `cpu` | `cuda` para GPU. Recomendado para ingesta; `cpu` válido para producción |
 | `FAISS_STORE_PATH` | `./faiss_store` | Ruta al directorio con `index.faiss` y `metadata.pkl` |
 | `RAG_TOP_K` | `5` | Número de fragmentos FAISS a recuperar por query |
-| `TELEGRAM_BOT_TOKEN` | `""` | Token del bot de Telegram (BotFather). Requerido para ejecutar el bot |
+| `ADMIN_API_TOKEN` | `""` | Token compartido que protege `/documents*` y `/admin*` (header `X-Admin-Token`). Vacío = panel deshabilitado (`503`, fail-closed). Generar con `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `API_URL` | `http://localhost:8080` | URL de la API que consume la UI Streamlit (`src/ui/client.py`) |
+| `TELEGRAM_BOT_TOKEN` | `""` | Token del bot de Telegram (BotFather). Requerido para ejecutar el bot. Editable en caliente desde el panel (requiere reiniciar el bot, ver sección 6) |
 | `LOG_LEVEL` | `INFO` | Nivel de logging: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `NOTIFIER_ENABLED` | `true` | Activa/desactiva el envío de notificaciones por email |
-| `NOTIFIER_EMAIL_TO` | `""` | Destinatario de las alertas de riesgo. Vacío = notificaciones desactivadas |
+| `NOTIFIER_ENABLED` | `true` | Activa/desactiva el envío de notificaciones por email. Editable en caliente desde el panel |
+| `NOTIFIER_EMAIL_TO` | `""` | Destinatario de las alertas de riesgo. Vacío = notificaciones desactivadas. Editable en caliente |
 | `NOTIFIER_SMTP_HOST` | `smtp.gmail.com` | Servidor SMTP |
 | `NOTIFIER_SMTP_PORT` | `587` | Puerto SMTP (STARTTLS) |
-| `NOTIFIER_SMTP_USER` | `""` | Usuario SMTP (email remitente) |
-| `NOTIFIER_SMTP_PASSWORD` | `""` | Contraseña SMTP. Para Gmail: usar App Password (no la contraseña de cuenta) |
+| `NOTIFIER_SMTP_USER` | `""` | Usuario SMTP (email remitente). Editable en caliente |
+| `NOTIFIER_SMTP_PASSWORD` | `""` | Contraseña SMTP. Para Gmail: usar App Password (no la contraseña de cuenta). Editable en caliente |
+| `STATUS_CHECK_INTERVAL_LOW_SECONDS` | `60` | Frecuencia de check-ins automáticos (JobQueue) para usuarios de riesgo bajo. Solo la lee el proceso del bot al arrancar — editable desde el panel, requiere reiniciar el bot |
+| `STATUS_CHECK_INTERVAL_MEDIUM_SECONDS` | `45` | Ídem, riesgo medio |
+| `STATUS_CHECK_INTERVAL_HIGH_SECONDS` | `30` | Ídem, riesgo alto |
+| `STATUS_CHECK_MESSAGE` | `"🩺 Check de estado — ..."` | Texto del mensaje automático de seguimiento |
+| `ACTIVE_USERS_ENCRYPTION_KEY` | `""` | Clave Fernet para cifrar `active_users.json` (registro de usuarios activos del bot) en disco. Generar con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `DATASET_MEDMCQA_PATH` | `./datasets/data` | Ruta al dataset MedMCQA crudo (solo para ingesta) |
 | `DATASET_MEDQA_PATH` | `./datasets/data_clean/data_clean` | Ruta al dataset MedQA crudo (solo para ingesta) |
-| `DATASET_MULTICLINSUM_PATH` | `./datasets/multiclinsum_large-scale_train_es/...` | Ruta al dataset MultiClinSum crudo (solo para ingesta) |
+| `DATASET_MULTICLINSUM_PATH` | `./datasets/multiclinsum_large-scale_train_es/...` | Ruta al dataset MultiClinSum crudo (solo para ingesta; el dataset ya no se indexa en producción, ver nota de licencias) |
 
 ---
 
-## 13. Instalación y Ejecución Local
+## 14. Instalación y Ejecución Local
 
 ### Prerrequisitos
 
 - Python 3.12.7
 - CUDA 12.1 (opcional, recomendado para ingesta)
-- ~2 GB RAM libres para cargar el índice FAISS
-- ~150 MB RAM adicionales para el índice BM25
+- ~2 GB RAM libres para cargar el índice FAISS (retrieval 100% denso, sin BM25 desde Config D)
 
 ### Instalación
 
@@ -826,19 +1088,15 @@ python -m venv venv
 .\venv\Scripts\activate        # Windows
 # source venv/bin/activate     # Linux/macOS
 
-# 3. Instalar sentence-transformers PRIMERO (versión específica)
-# ⚠️ CRÍTICO: sentence-transformers==3.3.1 del requirements.txt
-#    produce cuelgue silencioso al importar con torch.
-#    Instalar 2.7.0 ANTES del resto de dependencias.
-pip install sentence-transformers==2.7.0
-
-# 4. Instalar PyTorch con soporte CUDA (si tienes GPU)
+# 3. Instalar PyTorch con soporte CUDA (si tienes GPU)
 pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
 
-# 5. Instalar el resto de dependencias
+# 4. Instalar el resto de dependencias
+# (requirements.txt ya pinea sentence-transformers==2.7.0 — la versión
+# 3.3.1 producía un cuelgue silencioso al importar junto con torch)
 pip install -r requirements.txt
 
-# 6. Configurar variables de entorno
+# 5. Configurar variables de entorno
 cp .env.example .env
 # Editar .env con GROQ_API_KEY y demás valores requeridos
 ```
@@ -893,15 +1151,14 @@ copy src\rag\retriever_configB.py src\rag\retriever.py
 ### Tests
 
 ```bash
-# No hay tests automatizados implementados.
-# El directorio tests/ existe pero está vacío.
-# Las pruebas del sistema son manuales, documentadas en foragents/test_cases.md.
-pytest tests/   # ejecuta sin fallos pero sin cobertura alguna
+./venv/Scripts/python.exe -m pytest -q
 ```
+
+Suite de `pytest` en `tests/` (clasificadores, gestión de documentos, config editable, supervisor del bot, citas, chat streaming, usuarios activos). Los fixtures de `tests/conftest.py` evitan cargar el índice FAISS real (780 MB) y resetean los singletons de clientes Groq cacheados entre tests. Las pruebas manuales de flujo end-to-end siguen documentadas en `foragents/test_cases.md`.
 
 ---
 
-## 14. Despliegue
+## 15. Despliegue
 
 No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el repositorio. El sistema está diseñado para ejecución local en la máquina de desarrollo del investigador.
 
@@ -915,7 +1172,7 @@ No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el re
 
 ---
 
-## 15. Decisiones Técnicas Relevantes
+## 16. Decisiones Técnicas Relevantes
 
 | Decisión | Alternativas consideradas | Razón elegida |
 |---|---|---|
@@ -928,30 +1185,31 @@ No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el re
 | **Heurística + LLM en cascada** para riesgo | LLM solo | Heurística: latencia 0ms, determinismo, sin costo de API para casos obvios (hemorragia, convulsión). LLM solo para casos ambiguos. |
 | **Historial de 6 turnos** | Historial completo | Equilibrio entre contexto conversacional y ventana de contexto del LLM. Más de 6 turnos incrementa costo de tokens sin mejora perceptible. |
 | **Sin fine-tuning** | QLoRA, LoRA | Restricción explícita del proyecto. El RAG con corpus especializado compensa la falta de fine-tuning para el dominio. |
+| **NDJSON sobre `StreamingResponse`** para `/chat/stream` | WebSocket, Server-Sent Events | Un endpoint HTTP normal basta para un stream unidireccional servidor→cliente; NDJSON es trivial de parsear línea por línea en `httpx.iter_lines()`, sin librería de WebSocket en ningún lado del stack. |
+| **Bot de Telegram como subproceso hijo de la API** (`subprocess.Popen`) | systemd/Docker/supervisor externo, IPC en caliente hacia el proceso del bot | El proyecto corre en una sola máquina sin orquestador; un subproceso administrado por la propia API es suficiente para iniciar/detener/reiniciar desde la UI, y evita construir sincronización en caliente entre dos procesos para 4 variables que el bot solo lee al arrancar. |
+| **Campos Pydantic fijos (`extra="forbid"`)** para `PATCH /admin/config`, en vez de un `{key, value}` genérico | Endpoint genérico de key/value | Un endpoint que escribe en `.env` es superficie de inyección de configuración; con campos fijos no existe forma de pedirle que toque una variable fuera de la lista declarada (p. ej. `ADMIN_API_TOKEN`) — un campo desconocido es `422`, nunca se aplica ni se ignora en silencio. |
 
 ---
 
-## 16. Limitaciones Conocidas y Trabajo Pendiente
+## 17. Limitaciones Conocidas y Trabajo Pendiente
 
 ### Limitaciones técnicas actuales
 
 | Limitación | Impacto | Mitigación posible |
 |---|---|---|
-| **Sin tests automatizados** | No hay cobertura de regresión; cambios pueden romper comportamiento silenciosamente | Implementar pytest con mocks de Groq API |
-| **sentence-transformers==2.7.0** no está en requirements.txt | Instalación fresh puede fallar o colgar | Actualizar requirements.txt o añadir nota de instalación |
-| **GROQ_MODEL en settings.py** no siempre respetado | El código en `chain.py`, `intent_classifier.py` y `risk_detector.py` hardcodea `llama-3.3-70b-versatile` | Centralizar el nombre del modelo en `settings.groq_model` |
-| **CORS abierto a `*`** | Cualquier origen puede consumir la API | Restringir a URL de Streamlit en producción |
-| **Historial conversacional en RAM** (bot Telegram) | Se pierde al reiniciar el bot | Persistir en Redis o SQLite |
+| **CORS abierto a `*`** | Cualquier origen puede consumir la API pública (`/health`, `/chat`, `/classify`); los endpoints admin sí quedan protegidos por `X-Admin-Token` | Restringir a URL de Streamlit en producción |
 | **Cuota de 100k tok/día en Groq** | Limita evaluaciones largas y uso intensivo | Dos claves rotativas (ya implementado), o migrar evaluación a Cerebras |
 | **faithfulness=0.456** vs baseline 0.713 | Brecha de ~26pp respecto al sistema de referencia | Ver mejoras propuestas (reranker, system prompt restrictivo) |
 | **Sin despliegue automatizado** | Requiere setup manual en cada máquina | Dockerizar API + Streamlit |
+| **`--workers 1` obligatorio en uvicorn** | El `FAISSStore` singleton, sus locks, y `bot_supervisor` son estado por-proceso; con `--workers N>1` cada worker mantendría una copia divergente del índice y un subproceso del bot propio | Documentado explícitamente en `main.py`; no hay mitigación sin repensar el estado como externo (Redis, DB) |
+| **Self-restart de la propia API no implementado** | La consola solo reporta el estado de la API (uptime/logs), no puede reiniciarla | A propósito — decisión documentada (fragilidad de auto-matar el propio proceso, bajo valor cuando `uvicorn` ya se controla por terminal) |
 
 ### Trabajo pendiente (backlog)
 
 - [ ] **Reranker cross-encoder local** (`BAAI/bge-reranker-v2-m3`) — k=20 candidatos → top-5 al LLM
 - [ ] **System prompt más restrictivo** — LLM debe declarar explícitamente "no tengo información suficiente"
 - [x] ~~**HyDE** (Hypothetical Document Embeddings)~~ — probado (`retriever_configE.py`), descartado: sin mejora medible sobre Config D (deltas dentro del ruido, 14 pares) y con costo real de latencia (+~1.3s/turno) y cuota Groq. Ver `foragents/qa_technical.md` Q32.
-- [ ] **Tests unitarios** para clasificadores, retriever y chain
+- [x] **Tests unitarios** para clasificadores, gestión de documentos, config editable, supervisor del bot, citas y chat streaming — ver sección 14
 - [ ] **Web search skill** — fallback Tavily cuando el vector store no cubre el tema
 - [ ] **Persistencia de historial** — SQLite o Redis para el bot Telegram
 - [ ] **Dockerización** — Dockerfile para API + Streamlit
@@ -960,7 +1218,7 @@ No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el re
 
 ---
 
-## 16. Glosario
+## 18. Glosario
 
 | Término | Definición en el contexto del proyecto |
 |---|---|
@@ -985,4 +1243,4 @@ No existe pipeline de CI/CD, Dockerfile ni configuración de despliegue en el re
 
 ---
 
-*Documentación generada en Julio 2026. Verificada contra el código fuente del commit `4011d01`.*
+*Documentación generada en Julio 2026, ampliada en Agosto 2026 (panel de administración, configuración editable, supervisor del bot, streaming + citas por documento). Verificada contra el código fuente del commit `5d7fd6e`.*
