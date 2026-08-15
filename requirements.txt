@@ -25,7 +25,9 @@ langchain-groq==0.2.3
 groq==0.13.1
 
 # --- Embeddings & Vector Store ---
-sentence-transformers==3.3.1
+# sentence-transformers==3.3.1 produce un cuelgue silencioso al importar
+# junto con torch (ver docs/DOCUMENTACION.md, seccion 14) — pineado a 2.7.0.
+sentence-transformers==2.7.0
 faiss-cpu==1.9.0
 transformers==4.57.6
 torch==2.12.0
