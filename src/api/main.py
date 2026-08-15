@@ -16,13 +16,19 @@ Panel de administración (/documents*, /admin*): requiere ADMIN_API_TOKEN
 en .env (ver src/api/auth.py) y un único worker de uvicorn — el
 FAISSStore singleton y sus locks son por-proceso, así que con
 --workers > 1 cada proceso mantiene una copia divergente del índice.
+
+/admin/config acepta además un PATCH para un conjunto fijo de variables
+(ver UpdateConfigRequest en schemas.py) que se aplican en caliente y se
+persisten en .env.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -55,6 +61,25 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Buffer de logs en memoria — alimenta GET /admin/logs (consola del panel
+# admin). Cuelga del logger raíz para capturar todo lo que ya se loguea
+# vía logging.basicConfig arriba, sin duplicar formato ni handlers.
+# ---------------------------------------------------------------------------
+
+_api_started_at = datetime.now(timezone.utc)
+_log_buffer: deque[str] = deque(maxlen=1000)
+
+
+class _DequeHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        _log_buffer.append(self.format(record))
+
+
+_deque_handler = _DequeHandler()
+_deque_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s"))
+logging.getLogger().addHandler(_deque_handler)
 
 
 # ---------------------------------------------------------------------------

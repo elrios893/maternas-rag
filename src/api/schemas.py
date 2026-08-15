@@ -217,6 +217,21 @@ class EvaluationDetailResponse(BaseModel):
 # GET /admin/config
 # ---------------------------------------------------------------------------
 
+class EditableConfigView(BaseModel):
+    """Valores NO secretos de settings, para prellenar el formulario de
+    edición. Los 3 secretos (groq_api_key, notifier_smtp_password,
+    telegram_bot_token) se quedan fuera a propósito: solo viajan como
+    booleano en AdminConfigResponse.secrets_configured, igual que ya
+    pasa hoy — nunca se devuelve el valor de un secreto."""
+    groq_model:            str
+    notifier_enabled:      bool
+    notifier_email_to:     str
+    notifier_smtp_user:    str
+    status_check_interval_low_seconds:    float
+    status_check_interval_medium_seconds: float
+    status_check_interval_high_seconds:   float
+
+
 class AdminConfigResponse(BaseModel):
     embedding_model:  str
     embedding_device: str
@@ -225,3 +240,44 @@ class AdminConfigResponse(BaseModel):
     groq_model:       str
     index_build_info: dict = Field(default_factory=dict)
     secrets_configured: dict[str, bool] = Field(default_factory=dict)
+    editable:         EditableConfigView
+
+
+# ---------------------------------------------------------------------------
+# PATCH /admin/config
+# ---------------------------------------------------------------------------
+
+class UpdateConfigRequest(BaseModel):
+    """Un campo fijo por variable editable — a propósito, no un {key,
+    value} genérico: así no existe forma de pedirle que toque una
+    variable fuera de esta lista (p. ej. ADMIN_API_TOKEN). extra="forbid"
+    hace que un campo desconocido sea un 422, no un valor ignorado en
+    silencio."""
+    model_config = {"extra": "forbid"}
+
+    groq_model:              Optional[str]   = Field(None, max_length=200)
+    groq_api_key:            Optional[str]   = Field(None, max_length=500)
+    notifier_enabled:        Optional[bool]  = None
+    notifier_email_to:       Optional[str]   = Field(None, max_length=320)
+    notifier_smtp_user:      Optional[str]   = Field(None, max_length=320)
+    notifier_smtp_password:  Optional[str]   = Field(None, max_length=500)
+    telegram_bot_token:      Optional[str]   = Field(None, max_length=200)
+    status_check_interval_low_seconds:    Optional[float] = Field(None, gt=0, le=86400)
+    status_check_interval_medium_seconds: Optional[float] = Field(None, gt=0, le=86400)
+    status_check_interval_high_seconds:   Optional[float] = Field(None, gt=0, le=86400)
+
+
+class UpdateConfigResponse(BaseModel):
+    updated:              list[str]   # nombres de campo que cambiaron, nunca valores
+    requires_bot_restart: bool
+    config:               AdminConfigResponse
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/logs
+# ---------------------------------------------------------------------------
+
+class ApiLogsResponse(BaseModel):
+    started_at:     str
+    uptime_seconds: float
+    lines:          list[str]
