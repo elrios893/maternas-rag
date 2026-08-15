@@ -281,3 +281,20 @@ class ApiLogsResponse(BaseModel):
     started_at:     str
     uptime_seconds: float
     lines:          list[str]
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/bot/*
+# ---------------------------------------------------------------------------
+
+class BotStatusResponse(BaseModel):
+    running:        bool
+    pid:            Optional[int] = None
+    started_at:     Optional[str] = None
+    uptime_seconds: Optional[float] = None
+    exit_code:      Optional[int] = None
+    crashed:        bool = False   # True solo si terminó por su cuenta, no por stop/restart
+
+
+class BotLogsResponse(BaseModel):
+    lines: list[str]

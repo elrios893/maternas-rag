@@ -12,14 +12,16 @@ Arrancar:
 Docs interactivas:
     http://localhost:8000/docs
 
-Panel de administración (/documents*, /admin*): requiere ADMIN_API_TOKEN
-en .env (ver src/api/auth.py) y un único worker de uvicorn — el
-FAISSStore singleton y sus locks son por-proceso, así que con
---workers > 1 cada proceso mantiene una copia divergente del índice.
+Panel de administración (/documents*, /admin*, /admin/bot*): requiere
+ADMIN_API_TOKEN en .env (ver src/api/auth.py) y un único worker de
+uvicorn — el FAISSStore singleton y sus locks son por-proceso, así que
+con --workers > 1 cada proceso mantiene una copia divergente del índice
+(y bot_supervisor.py mantendría un subproceso del bot por worker).
 
 /admin/config acepta además un PATCH para un conjunto fijo de variables
 (ver UpdateConfigRequest en schemas.py) que se aplican en caliente y se
-persisten en .env.
+persisten en .env. /admin/bot/* arranca/detiene el proceso del bot de
+Telegram como subproceso hijo de esta API (ver bot_supervisor.py).
 """
 
 from __future__ import annotations
@@ -47,7 +49,9 @@ from src.api.schemas import (
     HealthResponse,
     SourceDoc,
 )
+from src.api import bot_supervisor
 from src.api.routes_admin import router as admin_router
+from src.api.routes_bot import router as bot_router
 from src.api.routes_documents import router as documents_router
 from src.classifiers.intent_classifier import classify_intent
 from src.classifiers.risk_detector import detect_risk
@@ -95,6 +99,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error cargando FAISS: {e}")
     yield
+    bot_supervisor.shutdown()   # no dejar el subproceso del bot huérfano
     logger.info("Apagando servidor.")
 
 
@@ -118,6 +123,7 @@ app.add_middleware(
 
 app.include_router(documents_router)
 app.include_router(admin_router)
+app.include_router(bot_router)
 
 
 # ---------------------------------------------------------------------------
