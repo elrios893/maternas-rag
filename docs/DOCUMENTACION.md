@@ -265,20 +265,20 @@ El bot de Telegram (`src/bot/maternas_bot.py`) es una interfaz conversacional qu
 sequenceDiagram
     actor U as Usuario Telegram
     participant TG as Telegram Servers
-    participant BOT as maternas_bot.py\n(polling)
-    participant API as FastAPI\nlocalhost:8080
+    participant BOT as maternas_bot.py<br/>(polling)
+    participant API as FastAPI<br/>localhost:8080
     participant CHAIN as chain.py
 
     U->>TG: mensaje de texto
     TG->>BOT: update (polling)
-    BOT->>BOT: recupera historial RAM\npor user_id
-    BOT->>API: POST /chat\n{message, history}
+    BOT->>BOT: recupera historial RAM<br/>por user_id
+    BOT->>API: POST /chat<br/>{message, history}
     API->>CHAIN: rag_chat()
     CHAIN-->>API: ChatResponse
     API-->>BOT: JSON response
 
     alt needs_clarification = True
-        BOT->>TG: "💬 {clarification_question}"\n(sin header de riesgo, historial NO se actualiza)
+        BOT->>TG: "💬 {clarification_question}"<br/>(sin header de riesgo, historial NO se actualiza)
     else risk = high
         BOT->>TG: msg 1: "🚨 RIESGO ALTO — {flags}" (HTML)
         BOT->>TG: msg 2: respuesta RAG (texto plano)
@@ -353,11 +353,11 @@ El panel de administración vive dentro de la misma app de Streamlit (`src/ui/ap
 ```mermaid
 sequenceDiagram
     actor A as Admin
-    participant UI as Streamlit\n(admin_gate.py)
-    participant API as FastAPI\n(auth.py)
+    participant UI as Streamlit<br/>(admin_gate.py)
+    participant API as FastAPI<br/>(auth.py)
 
     A->>UI: ingresa token en el sidebar
-    UI->>API: GET /admin/config\nheader X-Admin-Token
+    UI->>API: GET /admin/config<br/>header X-Admin-Token
     alt token vacío/incorrecto
         API-->>UI: 401 Unauthorized
         UI-->>A: "Token inválido" — is_admin permanece False
@@ -626,16 +626,16 @@ Pipeline offline (no se ejecuta en producción). Dos fases separadas permiten re
 ```mermaid
 sequenceDiagram
     actor U as Usuario
-    participant IF as Interface\n(Streamlit/Telegram)
-    participant API as FastAPI\nPOST /chat
-    participant CHAIN as chain.py\nchat()
+    participant IF as Interface<br/>(Streamlit/Telegram)
+    participant API as FastAPI<br/>POST /chat
+    participant CHAIN as chain.py<br/>chat()
     participant IC as IntentClassifier
     participant RD as RiskDetector
-    participant RTR as Retriever\n(FAISS denso, Config D)
+    participant RTR as Retriever<br/>(FAISS denso, Config D)
     participant FAISS as FAISSStore
     participant CITE as citations.py
-    participant GROQ as Groq LLM\nsettings.groq_model
-    participant SMTP as Notifier\nSMTP
+    participant GROQ as Groq LLM<br/>settings.groq_model
+    participant SMTP as Notifier<br/>SMTP
 
     U->>IF: "me duele la cabeza fuerte"
     IF->>API: POST /chat {message, history}
@@ -661,11 +661,11 @@ sequenceDiagram
     RTR->>RTR: filtra top-5
     RTR-->>CHAIN: 5 fragmentos
 
-    CHAIN->>CITE: format_context(docs) → "--- [1] {nombre doc} ---\n..."
+    CHAIN->>CITE: format_context(docs) → "--- [1] {nombre doc} ---<br/>..."
     CHAIN->>GROQ: messages=[system+URGENT, history×6, context, query]
     GROQ-->>CHAIN: respuesta con citas [n]
     CHAIN->>CITE: build_reference_block(answer, docs) → bloque "Fuentes:"
-    CITE-->>CHAIN: answer + "\n\nFuentes:\n[1] {nombre del documento}"
+    CITE-->>CHAIN: answer + "<br/><br/>Fuentes:<br/>[1] {nombre del documento}"
     CHAIN-->>API: ChatResponse(answer, intent, risk_level, sources, notified=True)
     API-->>IF: JSON response
     IF-->>U: 🚨 RIESGO ALTO + respuesta + fuentes por nombre de documento
@@ -678,13 +678,13 @@ Mismo flujo lógico que `chat()`, pero emitido como eventos incrementales; la no
 ```mermaid
 sequenceDiagram
     actor U as Usuario
-    participant ST as UI Streamlit\nchat_view.py
-    participant API as FastAPI\nPOST /chat/stream
-    participant CHAIN as chain.py\nchat_stream()
-    participant CLS as _classify_turn()\n(intent + riesgo)
+    participant ST as UI Streamlit<br/>chat_view.py
+    participant API as FastAPI<br/>POST /chat/stream
+    participant CHAIN as chain.py<br/>chat_stream()
+    participant CLS as _classify_turn()<br/>(intent + riesgo)
     participant NT as Hilo: _run_notification()
     participant RTR as Retriever + citations.py
-    participant GROQ as Groq LLM\n(stream=True)
+    participant GROQ as Groq LLM<br/>(stream=True)
 
     U->>ST: envía mensaje
     ST->>API: POST /chat/stream {message, history}
@@ -710,7 +710,7 @@ sequenceDiagram
         loop por cada chunk del stream
             GROQ-->>CHAIN: delta.content
             CHAIN->>ST: {"type":"delta","text":"..."}
-            ST->>ST: placeholder = None hasta el 1er delta\n(evita que el banner de riesgo\nrenderice debajo del texto)
+            ST->>ST: placeholder = None hasta el 1er delta<br/>(evita que el banner de riesgo<br/>renderice debajo del texto)
         end
         CHAIN->>RTR: build_reference_block(answer, docs)
         RTR-->>CHAIN: bloque "Fuentes:" agrupado por documento
@@ -738,7 +738,7 @@ sequenceDiagram
     CHAIN->>CHAIN: _should_clarify(query="puedo tomar algo", intent="medicamentos", risk="low")
     Note over CHAIN: query < 6 tokens Y no contiene keywords de medicamento
     CHAIN->>CHAIN: _generate_clarification(query, intent)
-    CHAIN-->>U: needs_clarification=True\n"¿Para qué síntoma específico y en qué semana de gestación estás?"
+    CHAIN-->>U: needs_clarification=True<br/>"¿Para qué síntoma específico y en qué semana de gestación estás?"
     Note over U,CHAIN: historial NO se actualiza hasta recibir respuesta
 ```
 
