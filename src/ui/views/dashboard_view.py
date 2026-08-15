@@ -15,6 +15,10 @@ def _render_stat_card(title: str, value: str) -> None:
 
 
 def render_dashboard() -> None:
+    if not st.session_state.get("is_admin"):
+        st.error("Acceso restringido a administradores.")
+        st.stop()
+
     health = st.session_state.get("health", {})
     api_ok = st.session_state.get("api_ok", False)
     msg_count = len(st.session_state.get("messages", []))

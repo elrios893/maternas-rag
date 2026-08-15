@@ -41,10 +41,11 @@ def _render_stat_card(title: str, value: str) -> None:
 def _load_document_data() -> None:
     if st.session_state.get("doc_loaded"):
         return
+    token = st.session_state.admin_token
     try:
         with st.spinner("Cargando base documental..."):
-            stats = get_document_stats()
-            resp = list_documents(search="", page=1, per_page=PER_PAGE)
+            stats = get_document_stats(token)
+            resp = list_documents(token, search="", page=1, per_page=PER_PAGE)
         st.session_state.doc_stats = stats
         st.session_state.documents = resp.get("documents", [])
         st.session_state.doc_total = resp.get("total", 0)
@@ -64,10 +65,11 @@ def _load_document_data() -> None:
 
 
 def _fetch_documents(search: str = "", page: int = 1) -> None:
+    token = st.session_state.admin_token
     with st.spinner("Buscando documentos..."):
         try:
-            stats = get_document_stats()
-            resp = list_documents(search=search, page=page, per_page=PER_PAGE)
+            stats = get_document_stats(token)
+            resp = list_documents(token, search=search, page=page, per_page=PER_PAGE)
             st.session_state.doc_stats = stats
             st.session_state.documents = resp.get("documents", [])
             st.session_state.doc_total = resp.get("total", 0)
@@ -161,7 +163,7 @@ def _render_chunk_text(text: str) -> None:
 
 def _toggle_doc_status(doc_id: str, active: bool) -> None:
     try:
-        toggle_document_status(doc_id, active=active)
+        toggle_document_status(st.session_state.admin_token, doc_id, active=active)
         st.session_state.doc_loaded = False
         st.rerun()
     except httpx.HTTPError:
@@ -189,7 +191,7 @@ def _show_document_detail(doc_id: str) -> None:
 
     with st.spinner("Cargando detalle..."):
         try:
-            detail = get_document_detail(doc_id, page=page, per_page=DETAIL_PER_PAGE)
+            detail = get_document_detail(st.session_state.admin_token, doc_id, page=page, per_page=DETAIL_PER_PAGE)
         except httpx.HTTPError:
             st.error("No se pudo cargar el detalle del documento.")
             return
@@ -247,6 +249,10 @@ def _show_document_detail(doc_id: str) -> None:
 
 
 def render_documents() -> None:
+    if not st.session_state.get("is_admin"):
+        st.error("Acceso restringido a administradores.")
+        st.stop()
+
     st.title("📁 Documentos")
     st.caption("Gestiona la base documental utilizada por el asistente RAG.")
     st.divider()
@@ -297,7 +303,9 @@ def render_documents() -> None:
             if st.button("Subir e indexar", use_container_width=True):
                 with st.spinner("Procesando documento..."):
                     try:
-                        resp = upload_document(uploaded_file.name, uploaded_file.read())
+                        resp = upload_document(
+                            st.session_state.admin_token, uploaded_file.name, uploaded_file.read()
+                        )
                     except httpx.HTTPStatusError as exc:
                         st.error(_upload_error_message(exc))
                     except httpx.HTTPError:

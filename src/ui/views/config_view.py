@@ -25,6 +25,10 @@ SECRET_LABELS = {
 
 
 def render_config() -> None:
+    if not st.session_state.get("is_admin"):
+        st.error("Acceso restringido a administradores.")
+        st.stop()
+
     st.title("⚙ Configuración")
     st.caption("Configuración efectiva del backend. Solo lectura — los secretos se muestran redactados.")
     st.divider()
@@ -34,7 +38,7 @@ def render_config() -> None:
         return
 
     try:
-        cfg = get_admin_config()
+        cfg = get_admin_config(st.session_state.admin_token)
     except httpx.HTTPError:
         st.error("No se pudo cargar la configuración del backend.")
         return
@@ -86,7 +90,7 @@ def render_config() -> None:
 
     if st.button("🔌 Probar conexión con la API"):
         try:
-            health = check_health()
+            health = check_health()  # /health es público, sin token
             st.success(f"OK — {health.get('total_vectors', 0):,} vectores, modelo {health.get('model', '—')}")
         except httpx.HTTPError:
             st.error("No se pudo conectar con la API.")

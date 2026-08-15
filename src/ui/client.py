@@ -15,16 +15,18 @@ API_URL     = settings.api_url
 API_TIMEOUT = 60
 
 
-def _admin_headers() -> dict:
+def _admin_headers(admin_token: str) -> dict:
     """Header de autenticación para /documents* y /admin*.
 
-    No se envía en /health ni /chat, que son públicos. El token vive en
-    el proceso de Streamlit (settings.admin_api_token, leído de .env) —
-    nunca llega al navegador, porque Streamlit renderiza del lado
-    servidor.
+    No se envía en /health ni /chat, que son públicos. `admin_token` lo
+    pasa cada vista, leído de st.session_state — NUNCA de
+    settings.admin_api_token acá: este módulo no sabe qué sesión de
+    navegador está llamando, y en modo servidor Streamlit corre un solo
+    proceso para todas las sesiones concurrentes. Si el token viviera en
+    una variable de módulo, la sesión de un admin autenticado quedaría
+    expuesta a cualquier otra sesión (ver src/ui/admin_gate.py).
     """
-    token = settings.admin_api_token
-    return {"X-Admin-Token": token} if token else {}
+    return {"X-Admin-Token": admin_token} if admin_token else {}
 
 
 # ---------------------------------------------------------------------------
@@ -48,50 +50,50 @@ def call_chat(message: str, history: list) -> dict:
 # Documentos (requieren X-Admin-Token)
 # ---------------------------------------------------------------------------
 
-def list_documents(search: str = "", page: int = 1, per_page: int = 20) -> dict:
+def list_documents(admin_token: str, search: str = "", page: int = 1, per_page: int = 20) -> dict:
     r = httpx.get(
         f"{API_URL}/documents",
         params={"search": search, "page": page, "per_page": per_page},
-        headers=_admin_headers(),
+        headers=_admin_headers(admin_token),
         timeout=10,
     )
     r.raise_for_status()
     return r.json()
 
 
-def get_document_stats() -> dict:
-    r = httpx.get(f"{API_URL}/documents/stats", headers=_admin_headers(), timeout=10)
+def get_document_stats(admin_token: str) -> dict:
+    r = httpx.get(f"{API_URL}/documents/stats", headers=_admin_headers(admin_token), timeout=10)
     r.raise_for_status()
     return r.json()
 
 
-def get_document_detail(doc_id: str, page: int = 1, per_page: int = 20) -> dict:
+def get_document_detail(admin_token: str, doc_id: str, page: int = 1, per_page: int = 20) -> dict:
     r = httpx.get(
         f"{API_URL}/documents/{quote(doc_id, safe='')}",
         params={"page": page, "per_page": per_page},
-        headers=_admin_headers(),
+        headers=_admin_headers(admin_token),
         timeout=10,
     )
     r.raise_for_status()
     return r.json()
 
 
-def toggle_document_status(doc_id: str, active: bool) -> dict:
+def toggle_document_status(admin_token: str, doc_id: str, active: bool) -> dict:
     r = httpx.patch(
         f"{API_URL}/documents/{quote(doc_id, safe='')}",
         json={"active": active},
-        headers=_admin_headers(),
+        headers=_admin_headers(admin_token),
         timeout=10,
     )
     r.raise_for_status()
     return r.json()
 
 
-def upload_document(filename: str, content: bytes) -> dict:
+def upload_document(admin_token: str, filename: str, content: bytes) -> dict:
     r = httpx.post(
         f"{API_URL}/documents/upload",
         files={"file": (filename, content)},
-        headers=_admin_headers(),
+        headers=_admin_headers(admin_token),
         # El embedding corre síncrono en el backend (ver
         # src/api/routes_documents.py, MAX_UPLOAD_CHUNKS); 300s da margen
         # incluso para una subida cerca del límite corriendo en CPU.
@@ -105,23 +107,23 @@ def upload_document(filename: str, content: bytes) -> dict:
 # Administración (requieren X-Admin-Token)
 # ---------------------------------------------------------------------------
 
-def list_evaluations() -> dict:
-    r = httpx.get(f"{API_URL}/admin/evaluations", headers=_admin_headers(), timeout=10)
+def list_evaluations(admin_token: str) -> dict:
+    r = httpx.get(f"{API_URL}/admin/evaluations", headers=_admin_headers(admin_token), timeout=10)
     r.raise_for_status()
     return r.json()
 
 
-def get_evaluation_detail(run_id: str) -> dict:
+def get_evaluation_detail(admin_token: str, run_id: str) -> dict:
     r = httpx.get(
         f"{API_URL}/admin/evaluations/{quote(run_id, safe='')}",
-        headers=_admin_headers(),
+        headers=_admin_headers(admin_token),
         timeout=10,
     )
     r.raise_for_status()
     return r.json()
 
 
-def get_admin_config() -> dict:
-    r = httpx.get(f"{API_URL}/admin/config", headers=_admin_headers(), timeout=10)
+def get_admin_config(admin_token: str) -> dict:
+    r = httpx.get(f"{API_URL}/admin/config", headers=_admin_headers(admin_token), timeout=10)
     r.raise_for_status()
     return r.json()

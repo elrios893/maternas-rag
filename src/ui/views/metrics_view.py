@@ -49,6 +49,10 @@ def _render_breakdown(title: str, data: dict) -> None:
 
 
 def render_metrics() -> None:
+    if not st.session_state.get("is_admin"):
+        st.error("Acceso restringido a administradores.")
+        st.stop()
+
     st.title("📊 Métricas")
     st.caption("Resultados de las corridas de evaluación RAG (src/evaluation/eval_pipeline.py).")
     st.divider()
@@ -57,8 +61,9 @@ def render_metrics() -> None:
         st.warning("La API no está disponible. Inicia el servidor para ver las métricas.")
         return
 
+    admin_token = st.session_state.admin_token
     try:
-        runs = list_evaluations().get("runs", [])
+        runs = list_evaluations(admin_token).get("runs", [])
     except httpx.HTTPError:
         st.error("No se pudieron cargar las corridas de evaluación.")
         return
@@ -75,7 +80,7 @@ def render_metrics() -> None:
     run_id = options[selected_label]
 
     try:
-        detail = get_evaluation_detail(run_id)
+        detail = get_evaluation_detail(admin_token, run_id)
     except httpx.HTTPError:
         st.error("No se pudo cargar el detalle de la corrida seleccionada.")
         return

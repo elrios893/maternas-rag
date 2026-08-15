@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import streamlit as st
 
+from src.ui.admin_gate import is_admin, render_admin_gate
 from src.ui.client import check_health
 from src.ui.consent_gate import enforce_consent
 from src.ui.styles import STYLES
@@ -58,6 +59,10 @@ if "api_ok" not in st.session_state:
     st.session_state.api_ok = None
 if "consent_status" not in st.session_state:
     st.session_state.consent_status = None   # None | "accepted" | "rejected"
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+if "admin_token" not in st.session_state:
+    st.session_state.admin_token = ""
 
 # ---------------------------------------------------------------------------
 # Gate de consentimiento — antes de la sonda de salud y de la navegación,
@@ -98,6 +103,8 @@ with st.sidebar:
         st.error("API no disponible")
         st.caption("Arranca el servidor con:\n```\npython -m uvicorn src.api.main:app --port 8080\n```")
 
+    render_admin_gate()
+
     st.divider()
 
     with st.expander("📖 Fuentes de datos y licencias"):
@@ -111,14 +118,20 @@ with st.sidebar:
         )
 
 # ---------------------------------------------------------------------------
-# Navegación
+# Navegación — el resto de las páginas ni siquiera se declara acá si la
+# sesión no está autenticada como admin: st.navigation solo puede
+# resolver páginas que están en esta lista, así que quedan inalcanzables
+# incluso por URL directa, no solo ocultas en el menú.
 # ---------------------------------------------------------------------------
 
-pg = st.navigation([
-    st.Page(render_chat, title="Chat", icon="💬", default=True),
-    st.Page(render_dashboard, title="Dashboard", icon="🏠"),
-    st.Page(render_documents, title="Documentos", icon="📁"),
-    st.Page(render_metrics, title="Métricas", icon="📊"),
-    st.Page(render_config, title="Configuración", icon="⚙️"),
-])
+pages = [st.Page(render_chat, title="Chat", icon="💬", default=True)]
+if is_admin():
+    pages += [
+        st.Page(render_dashboard, title="Dashboard", icon="🏠"),
+        st.Page(render_documents, title="Documentos", icon="📁"),
+        st.Page(render_metrics, title="Métricas", icon="📊"),
+        st.Page(render_config, title="Configuración", icon="⚙️"),
+    ]
+
+pg = st.navigation(pages)
 pg.run()
